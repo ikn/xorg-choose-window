@@ -11,28 +11,21 @@
 
 
 // TODO (fixes)
-// cleanup: structure, types, names
+// cleanup: structure, types, names, comments
 // covers borders on floating windows
-// sort out error handling (man xcb-requests), memory management, exit cleanup
 // better window filtering
     // maybe use root window's ewmh _NET_CLIENT_LIST
     // maybe filter by ewmh _NET_WM_TYPE = normal
         // http://standards.freedesktop.org/wm-spec/wm-spec-latest.html#idm140200472629520
         // doesn't seem to be in xcb/xcb_ewmh.h (part of xcb-util-wm)
     // maybe filter by existence of icccm WM_STATE on the window
+// sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // test with multiple monitors
 // open font once, globally
 // put globals in a thing we pass around
 // change wsetup->overlay_rect to be just size
 // xcb_image_text_8: handle case with text size > 255
-
-// TODO (packaging)
-// readme/makefile; deps:
-    // (-lm)
-    // xcb (-lxcb)
-    // xcb-util keysyms (-lxcb-keysyms) (package: xcb-util-keysyms)
-    // xcb-util icccm (-lxcb-icccm) (package: xcb-util-wm) (can we set class without?)
 
 // TODO (improvements)
 // help/manpage

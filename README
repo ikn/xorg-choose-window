@@ -1,0 +1,41 @@
+xorg-choose-window 0.1.0 by Joseph Lansdowne.
+
+A utility for choosing from visible windows in Xorg.  Aimed at tiling window
+managers.  For example, you might focus the chosen window, or close it, or swap
+it with the currently focused window.
+
+http://ikn.org.uk/xorg-choose-window
+
+    LICENSE
+
+Licensed under the Apache License, version 2.0; if this was not included, you
+can find it here:
+    http://www.apache.org/licenses/LICENSE-2.0.txt
+
+    INSTALLATION
+
+On Unix-like systems, with Make and a C compiler, run `make' then
+`make install'; to uninstall, run `make uninstall'.
+
+It should be necessary to run `make install' as root (DESTDIR is supported).
+
+The following files are installed to the following default locations:
+
+xorg-choose-window -> /usr/local/bin/xorg-choose-window
+
+    DEPENDENCIES
+
+XCB, xcb-util-keysyms, xcb-util-wm: http://xcb.freedesktop.org/
+
+    USAGE
+
+Running the executable draws a string of characters over each visible window.
+Typing one of those strings causes the program to print the corresponding window
+ID to standard output and exit.  If any non-matching keys are pressed, the
+program exits without printing anything.
+
+Run `xorg-choose-window CHARACTERS', where CHARACTERS defines those available
+for use in the displayed strings; eg. `xorg-choose-window asdfjkl' is a good
+choice for a QWERTY keyboard layout.
+
+If an error is encountered, the program exits with status 1.
