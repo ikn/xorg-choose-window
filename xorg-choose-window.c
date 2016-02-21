@@ -1,3 +1,4 @@
+#include <time.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -12,7 +13,6 @@
 
 // TODO (fixes)
 // cleanup: structure, types, names, comments
-// covers borders on floating windows
 // better window filtering
     // maybe use root window's ewmh _NET_CLIENT_LIST
     // maybe filter by ewmh _NET_WM_TYPE = normal
@@ -21,7 +21,6 @@
     // maybe filter by existence of icccm WM_STATE on the window
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
-// test with multiple monitors
 // open font once, globally
 // put globals in a thing we pass around
 // change wsetup->overlay_rect to be just size
@@ -443,17 +442,32 @@ int main (int argc, char** argv) {
     if (screen == NULL) die("no screens\n");
     xroot = screen->root;
 
-    xcb_grab_keyboard_cookie_t gkc = xcb_grab_keyboard(
-        xcon, 0, xroot, XCB_CURRENT_TIME,
-        XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
-    xcb_grab_keyboard_reply_t* gkr;
-    if ((gkr = xcb_grab_keyboard_reply(xcon, gkc, NULL))) {
-        if (gkr->status != XCB_GRAB_STATUS_SUCCESS)
-            die("grab_keyboard: %d\n", gkr->status);
-        free(gkr);
-    } else {
-        die("grab_keyboard\n");
+    // wait a little for other programs to release the keyboard
+    // since this program is likely to be launched from a hotkey daemon
+    struct timespec ts = { 0, 1000000 };
+    int status;
+    for (int s = 0; s < 1000; s++) {
+        xcb_grab_keyboard_cookie_t gkc = xcb_grab_keyboard(
+            xcon, 0, xroot, XCB_CURRENT_TIME,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
+        xcb_grab_keyboard_reply_t* gkr;
+        if ((gkr = xcb_grab_keyboard_reply(xcon, gkc, NULL))) {
+            status = gkr->status;
+            free(gkr);
+            if (status == XCB_GRAB_STATUS_ALREADY_GRABBED) {
+                nanosleep(&ts, NULL);
+                continue;
+            } else if (status == XCB_GRAB_STATUS_SUCCESS) {
+                break;
+            } else {
+                die("grab_keyboard: %d\n", status);
+            }
+        } else {
+            die("grab_keyboard\n");
+        }
     }
+    if (status == XCB_GRAB_STATUS_ALREADY_GRABBED)
+        die("grab_keyboard: %d\n", status);
 
     xcb_key_symbols_t* ksymbols = xcb_key_symbols_alloc(xcon);
     if (ksymbols == NULL) die("key_symbols_alloc\n");

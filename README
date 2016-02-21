@@ -1,4 +1,4 @@
-xorg-choose-window 0.1.0 by Joseph Lansdowne.
+xorg-choose-window 0.1.0-next by Joseph Lansdowne.
 
 A utility for choosing from visible windows in Xorg.  Aimed at tiling window
 managers.  For example, you might focus the chosen window, or close it, or swap
