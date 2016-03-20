@@ -1,5 +1,5 @@
 PROG := xorg-choose-window
-PKGCONFIG_LIBS := xcb xcb-keysyms xcb-icccm
+PKGCONFIG_LIBS := xcb xcb-keysyms xcb-icccm xcb-ewmh
 CFLAGS += -Wall `pkg-config --cflags ${PKGCONFIG_LIBS}`
 LDLIBS += -lm `pkg-config --libs ${PKGCONFIG_LIBS}`
 INSTALL_PROGRAM := install

@@ -1,4 +1,6 @@
 0.1.0-next:
+ * improved window filtering
+ * fix for launching from other keyboard-grabbing programs
 
 0.1.0:
  * first release

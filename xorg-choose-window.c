@@ -8,17 +8,14 @@
 #include <math.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
+#include <xcb/xcb_ewmh.h>
 #include <xcb/xcb_keysyms.h>
 
 
 // TODO (fixes)
 // cleanup: structure, types, names, comments
 // better window filtering
-    // maybe use root window's ewmh _NET_CLIENT_LIST
-    // maybe filter by ewmh _NET_WM_TYPE = normal
-        // http://standards.freedesktop.org/wm-spec/wm-spec-latest.html#idm140200472629520
-        // doesn't seem to be in xcb/xcb_ewmh.h (part of xcb-util-wm)
-    // maybe filter by existence of icccm WM_STATE on the window
+    // use root window's ewmh _NET_CLIENT_LIST
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // open font once, globally
@@ -438,6 +435,10 @@ int main (int argc, char** argv) {
     xcb_screen_t *screen;
     xcon = xcb_connect(NULL, &default_screen);
     if (xcb_connection_has_error(xcon)) die("connect\n");
+    // initialise ewmh atoms
+    xcb_ewmh_connection_t ewmh;
+    xcb_intern_atom_cookie_t *ewmhc = xcb_ewmh_init_atoms(xcon, &ewmh);
+    if (!xcb_ewmh_init_atoms_replies(&ewmh, ewmhc, NULL)) die("ewmh init\n");
     screen = xcb_setup_roots_iterator(xcb_get_setup(xcon)).data;
     if (screen == NULL) die("no screens\n");
     xroot = screen->root;
@@ -483,19 +484,36 @@ int main (int argc, char** argv) {
     xcb_window_t* windows = calloc(all_windows_size, sizeof(xcb_window_t));
 
     for (int wi = 0; wi < all_windows_size; wi++) {
+        // ignore if hidden or override-redirect
         xcb_get_window_attributes_cookie_t gwac = (
             xcb_get_window_attributes(xcon, all_windows[wi]));
         xcb_get_window_attributes_reply_t* gwar;
         if (!(gwar = xcb_get_window_attributes_reply(xcon, gwac, NULL))) {
             die("get_window_attributes\n");
         }
-        if (
+        if (!(
             gwar->map_state == XCB_MAP_STATE_VIEWABLE &&
             gwar->override_redirect == 0
-        ) {
-            windows[windows_size] = all_windows[wi];
-            windows_size += 1;
+        )) continue;
+
+        // ignore if window type is not normal
+        xcb_get_property_cookie_t gpc = (
+            xcb_get_property(xcon, 0, all_windows[wi], ewmh._NET_WM_WINDOW_TYPE,
+                             XCB_ATOM_ATOM, 0, 1));
+        xcb_get_property_reply_t* gpr;
+        if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
+            die("get_property _NET_WM_WINDOW_TYPE\n");
         }
+        int prop_len = xcb_get_property_value_length(gpr);
+        uint32_t* window_type = (uint32_t*)xcb_get_property_value(gpr);
+        free(gpr);
+        // if reply length is 0, window type isn't defined, so don't ignore
+        if (prop_len > 0 && window_type[0] != ewmh._NET_WM_WINDOW_TYPE_NORMAL) {
+            continue;
+        }
+
+        windows[windows_size] = all_windows[wi];
+        windows_size += 1;
     }
 
     windows = realloc(windows, windows_size * sizeof(xcb_window_t));
