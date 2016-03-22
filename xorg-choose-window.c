@@ -14,8 +14,6 @@
 
 // TODO (fixes)
 // cleanup: structure, types, names, comments
-// better window filtering
-    // use root window's ewmh _NET_CLIENT_LIST
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // open font once, globally
@@ -55,6 +53,7 @@ xcb_window_t xroot;
 int FG_COLOUR = 0xffffffff;
 int BG_COLOUR = 0xff333333;
 char* OVERLAY_WINDOW_CLASS = "overlay\0xorg-choose-window";
+int MAX_WINDOWS = 1024;
 
 // keysyms with an obvious 1-character representation
 keysym_lookup_t keysym_lookup[] = {
@@ -161,6 +160,19 @@ void window_move_resize (xcb_window_t win, int x, int y, int w, int h) {
                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT);
     uint32_t values[] = { x, y, w, h };
     xcb_configure_window(xcon, win, mask, values);
+}
+
+int window_has_property (xcb_window_t window, xcb_atom_t prop) {
+    xcb_list_properties_cookie_t c = xcb_list_properties(xcon, window);
+    xcb_list_properties_reply_t* r;
+    if (!(r = xcb_list_properties_reply(xcon, c, NULL))) {
+        die("list_properties");
+    }
+    xcb_atom_t* props = xcb_list_properties_atoms(r);
+    for (int i = 0; i < xcb_list_properties_atoms_length(r); i++) {
+        if (props[i] == prop) return 1;
+    }
+    return 0;
 }
 
 
@@ -483,7 +495,41 @@ int main (int argc, char** argv) {
     int windows_size = 0;
     xcb_window_t* windows = calloc(all_windows_size, sizeof(xcb_window_t));
 
+    // retrieve window-manager-tracked windows
+    int tracked_windows_exists = (
+        window_has_property(xroot, ewmh._NET_CLIENT_LIST));
+    int tracked_windows_size;
+    xcb_window_t* tracked_windows;
+    xcb_get_property_cookie_t gpc;
+    xcb_get_property_reply_t* gpr;
+    if (tracked_windows_exists) {
+        gpc = (
+            xcb_get_property(xcon, 0, xroot, ewmh._NET_CLIENT_LIST,
+                             XCB_ATOM_WINDOW, 0, MAX_WINDOWS));
+        if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
+            die("get_property _NET_CLIENT_LIST\n");
+        }
+        // each window ID is 4 bytes
+        tracked_windows_size = xcb_get_property_value_length(gpr) / 4;
+        tracked_windows = (xcb_window_t*)xcb_get_property_value(gpr);
+        free(gpr);
+    }
+
     for (int wi = 0; wi < all_windows_size; wi++) {
+        // ignore if not tracked by the window manager
+        if (tracked_windows_exists) {
+            int found = 0;
+            for (int wj = 0; wj < tracked_windows_size; wj++) {
+                if (tracked_windows[wj] == all_windows[wi]) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                continue;
+            }
+        }
+
         // ignore if hidden or override-redirect
         xcb_get_window_attributes_cookie_t gwac = (
             xcb_get_window_attributes(xcon, all_windows[wi]));
@@ -497,10 +543,8 @@ int main (int argc, char** argv) {
         )) continue;
 
         // ignore if window type is not normal
-        xcb_get_property_cookie_t gpc = (
-            xcb_get_property(xcon, 0, all_windows[wi], ewmh._NET_WM_WINDOW_TYPE,
-                             XCB_ATOM_ATOM, 0, 1));
-        xcb_get_property_reply_t* gpr;
+        gpc = xcb_get_property(xcon, 0, all_windows[wi],
+                               ewmh._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 0, 1);
         if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
             die("get_property _NET_WM_WINDOW_TYPE\n");
         }
