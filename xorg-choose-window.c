@@ -512,7 +512,6 @@ int main (int argc, char** argv) {
         // each window ID is 4 bytes
         tracked_windows_size = xcb_get_property_value_length(gpr) / 4;
         tracked_windows = (xcb_window_t*)xcb_get_property_value(gpr);
-        free(gpr);
     }
 
     for (int wi = 0; wi < all_windows_size; wi++) {
@@ -545,12 +544,13 @@ int main (int argc, char** argv) {
         // ignore if window type is not normal
         gpc = xcb_get_property(xcon, 0, all_windows[wi],
                                ewmh._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 0, 1);
-        if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
+        xcb_get_property_reply_t* gpr2;
+        if (!(gpr2 = xcb_get_property_reply(xcon, gpc, NULL))) {
             die("get_property _NET_WM_WINDOW_TYPE\n");
         }
-        int prop_len = xcb_get_property_value_length(gpr);
-        uint32_t* window_type = (uint32_t*)xcb_get_property_value(gpr);
-        free(gpr);
+        int prop_len = xcb_get_property_value_length(gpr2);
+        uint32_t* window_type = (uint32_t*)xcb_get_property_value(gpr2);
+        free(gpr2);
         // if reply length is 0, window type isn't defined, so don't ignore
         if (prop_len > 0 && window_type[0] != ewmh._NET_WM_WINDOW_TYPE_NORMAL) {
             continue;
@@ -559,6 +559,8 @@ int main (int argc, char** argv) {
         windows[windows_size] = all_windows[wi];
         windows_size += 1;
     }
+
+    if (tracked_windows_exists) free(gpr);
 
     windows = realloc(windows, windows_size * sizeof(xcb_window_t));
 
