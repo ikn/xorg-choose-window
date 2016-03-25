@@ -31,18 +31,15 @@ specific language governing permissions and limitations under the License.
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // open font once, globally
-// put globals in a thing we pass around
-//  - also contain ksl/size
-//  - also structures for:
-//      - wsetups, size, new wsetups, new size
-//      - wsetup.overlay_*, wsetup.window
+// structures for:
+//  - wsetups, size, new wsetups, new size
+//  - wsetup.overlay_*, wsetup.window
 // change wsetup->overlay_rect to be just size
 // xcb_image_text_8: handle case with text size > 255
 
 // TODO (improvements)
 // help/manpage
 // configurable font/text size/colours/placement/padding, better defaults
-// only show keys that would need to be pressed, eg. 'aa', 'ao', 'o' when we have 3
 // take window IDs as whitelist/blacklist
 // options for output format (hex)
 // better expose redrawing (only some windows/rects?)
@@ -89,24 +86,30 @@ typedef struct window_setup_t {
 } window_setup_t;
 
 
-// -- globals
+/**
+ * Collection of data needed throughout the runtime of the program.
+ *
+ * xcon: the connection to the X server
+ * xroot: the root window
+ * ewmh: the state for `xcb_ewmh`
+ * ksymbols: cached key symbols
+ * ksl: keys available for use
+ * wsetups: array of setup structures
+ */
+typedef struct xcw_state_t {
+    xcb_connection_t* xcon;
+    xcb_window_t xroot;
+    xcb_ewmh_connection_t ewmh;
+    xcb_key_symbols_t* ksymbols;
+    keysyms_lookup_t* ksl;
+    int ksl_size;
+    window_setup_t* wsetups;
+    int wsetups_size;
+} xcw_state_t;
 
-/**
- * The connection to the X server.
- */
-xcb_connection_t* xcon;
-/**
- * The root window.
- */
-xcb_window_t xroot;
-/**
- * The state for `xcb_ewmh`.
- */
-xcb_ewmh_connection_t ewmh;
-/**
- * Cached key symbols.
- */
-xcb_key_symbols_t* ksymbols;
+
+// -- constants
+
 /**
  * Text colour for overlay windows.
  */
@@ -128,7 +131,7 @@ int MAX_WINDOWS = 1024;
  * Keysyms with an obvious 1-character representation.  Only these characters
  * may be used as input.
  */
-keysyms_lookup_t all_keysyms_lookup[] = {
+keysyms_lookup_t ALL_KEYSYMS_LOOKUP[] = {
     {'0', 0x0030},
     {'1', 0x0031},
     {'2', 0x0032},
@@ -167,10 +170,10 @@ keysyms_lookup_t all_keysyms_lookup[] = {
     {'z', 0x007a}
 };
 /**
- * Size of `all_keysyms_lookup`.
+ * Size of `ALL_KEYSYMS_LOOKUP`.
  */
-int all_keysyms_lookup_size = (
-    sizeof(all_keysyms_lookup) / sizeof(*all_keysyms_lookup));
+int ALL_KEYSYMS_LOOKUP_SIZE = (
+    sizeof(ALL_KEYSYMS_LOOKUP) / sizeof(*ALL_KEYSYMS_LOOKUP));
 
 
 // -- utilities
@@ -237,7 +240,8 @@ void choose_window (xcb_window_t window) {
  * cookie: corresponding to the request
  * msg: to print in case of error
  */
-void xorg_check_request (xcb_void_cookie_t cookie, char *msg) {
+void xorg_check_request (xcb_connection_t* xcon,
+                         xcb_void_cookie_t cookie, char *msg) {
     xcb_generic_error_t *error = xcb_request_check(xcon, cookie);
     if (error) die("xcb error: %s (%d)\n", msg, error->error_code);
 }
@@ -248,7 +252,8 @@ void xorg_check_request (xcb_void_cookie_t cookie, char *msg) {
  *
  * x, y: new absolute screen location
  */
-void xorg_window_move_resize (xcb_window_t window, int x, int y, int w, int h) {
+void xorg_window_move_resize (xcb_connection_t* xcon, xcb_window_t window,
+                              int x, int y, int w, int h) {
     int mask = (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT);
     uint32_t values[] = { x, y, w, h };
@@ -261,7 +266,8 @@ void xorg_window_move_resize (xcb_window_t window, int x, int y, int w, int h) {
  *
  * prop: property ID
  */
-int xorg_window_has_property (xcb_window_t window, xcb_atom_t prop) {
+int xorg_window_has_property (xcb_connection_t* xcon,
+                              xcb_window_t window, xcb_atom_t prop) {
     xcb_list_properties_cookie_t lpc = xcb_list_properties(xcon, window);
     xcb_list_properties_reply_t* lpr;
     if (!(lpr = xcb_list_properties_reply(xcon, lpc, NULL))) {
@@ -286,7 +292,7 @@ int xorg_window_has_property (xcb_window_t window, xcb_atom_t prop) {
  * Determine whether a window is 'normal' and visible according to the base Xorg
  * specification.
  */
-int xorg_window_normal (xcb_window_t window) {
+int xorg_window_normal (xcb_connection_t* xcon, xcb_window_t window) {
     xcb_get_window_attributes_cookie_t gwac = (
         xcb_get_window_attributes(xcon, window));
     xcb_get_window_attributes_reply_t* gwar;
@@ -304,12 +310,12 @@ int xorg_window_normal (xcb_window_t window) {
 /**
  * Determine whether a window is 'normal' according EWMH.
  */
-int ewmh_window_normal (xcb_window_t window) {
+int ewmh_window_normal (xcw_state_t* state, xcb_window_t window) {
     xcb_get_property_cookie_t gpc = (
-        xcb_get_property(xcon, 0, window, ewmh._NET_WM_WINDOW_TYPE,
-                         XCB_ATOM_ATOM, 0, 1));
+        xcb_get_property(state->xcon, 0, window,
+                         state->ewmh._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 0, 1));
     xcb_get_property_reply_t* gpr;
-    if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
+    if (!(gpr = xcb_get_property_reply(state->xcon, gpc, NULL))) {
         die("get_property _NET_WM_WINDOW_TYPE\n");
     }
     uint32_t* window_type = (uint32_t*)xcb_get_property_value(gpr);
@@ -317,7 +323,9 @@ int ewmh_window_normal (xcb_window_t window) {
     free(gpr);
 
     // if reply length is 0, window type isn't defined, so treat it as normal
-    return prop_len == 0 || window_type[0] != ewmh._NET_WM_WINDOW_TYPE_NORMAL;
+    return (
+        prop_len == 0 ||
+        window_type[0] != state->ewmh._NET_WM_WINDOW_TYPE_NORMAL);
 }
 
 
@@ -327,10 +335,13 @@ int ewmh_window_normal (xcb_window_t window) {
  * windows (output): window IDs
  * windows_size (output): size of `windows`
  */
-void xorg_get_windows (xcb_window_t** windows, int* windows_size) {
-    xcb_query_tree_cookie_t qtc = xcb_query_tree(xcon, xroot);
+void xorg_get_windows (xcw_state_t* state,
+                       xcb_window_t** windows, int* windows_size) {
+    xcb_query_tree_cookie_t qtc = xcb_query_tree(state->xcon, state->xroot);
     xcb_query_tree_reply_t* qtr;
-    if (!(qtr = xcb_query_tree_reply(xcon, qtc, NULL))) die("query_tree\n");
+    if (!(qtr = xcb_query_tree_reply(state->xcon, qtc, NULL))) {
+        die("query_tree\n");
+    }
     xcb_window_t* referenced_windows = xcb_query_tree_children(qtr);
     int size = xcb_query_tree_children_length(qtr);
 
@@ -351,16 +362,18 @@ void xorg_get_windows (xcb_window_t** windows, int* windows_size) {
  * windows (output): window IDs
  * windows_size (output): size of `windows`
  */
-void xorg_get_managed_windows (int* is_defined, xcb_window_t** windows,
-                               int* windows_size) {
-    *is_defined = xorg_window_has_property(xroot, ewmh._NET_CLIENT_LIST);
+void xorg_get_managed_windows (xcw_state_t* state, int* is_defined,
+                               xcb_window_t** windows, int* windows_size) {
+    *is_defined = xorg_window_has_property(
+        state->xcon, state->xroot, state->ewmh._NET_CLIENT_LIST);
 
     if (*is_defined) {
         xcb_get_property_cookie_t gpc = (
-            xcb_get_property(xcon, 0, xroot, ewmh._NET_CLIENT_LIST,
-                             XCB_ATOM_WINDOW, 0, MAX_WINDOWS));
+            xcb_get_property(state->xcon, 0, state->xroot,
+                             state->ewmh._NET_CLIENT_LIST, XCB_ATOM_WINDOW, 0,
+                             MAX_WINDOWS));
         xcb_get_property_reply_t* gpr;
-        if (!(gpr = xcb_get_property_reply(xcon, gpc, NULL))) {
+        if (!(gpr = xcb_get_property_reply(state->xcon, gpc, NULL))) {
             die("get_property _NET_CLIENT_LIST\n");
         }
         xcb_window_t* referenced_windows = (
@@ -397,24 +410,32 @@ int xorg_window_managed (xcb_window_t window, xcb_window_t* managed_windows,
 
 
 /**
- * Initialise the connection to the X server.  Sets `xcon`, `xroot`, `ewmh` and
- * `ksymbols`.
+ * Initialise the connection to the X server.
+ *
+ * state (output): pointer to program state; `ksl` and `wsetups` are not
+ *     initialised
  */
-void initialise_xorg () {
+void initialise_xorg (xcw_state_t** state) {
     int default_screen; // unused
     xcb_screen_t *screen;
-    xcon = xcb_connect(NULL, &default_screen);
+    xcb_connection_t* xcon = xcb_connect(NULL, &default_screen);
     if (xcb_connection_has_error(xcon)) die("connect\n");
 
     screen = xcb_setup_roots_iterator(xcb_get_setup(xcon)).data;
     if (screen == NULL) die("no screens\n");
-    xroot = screen->root;
+    xcb_window_t xroot = screen->root;
 
+    xcb_ewmh_connection_t ewmh;
     xcb_intern_atom_cookie_t *ewmhc = xcb_ewmh_init_atoms(xcon, &ewmh);
     if (!xcb_ewmh_init_atoms_replies(&ewmh, ewmhc, NULL)) die("ewmh init\n");
 
+    xcb_key_symbols_t* ksymbols;
     ksymbols = xcb_key_symbols_alloc(xcon);
     if (ksymbols == NULL) die("key_symbols_alloc\n");
+
+    *state = malloc(sizeof(xcw_state_t));
+    xcw_state_t local_state = { xcon, xroot, ewmh, ksymbols, NULL, 0, NULL, 0 };
+    **state = local_state;
 }
 
 
@@ -479,7 +500,7 @@ void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
     for (int i = 0; i < strlen(char_pool); i++) {
         char c = char_pool[i];
         keysyms_lookup_t* ksl_item = keysyms_lookup_find_char(
-            all_keysyms_lookup, all_keysyms_lookup_size, c);
+            ALL_KEYSYMS_LOOKUP, ALL_KEYSYMS_LOOKUP_SIZE, c);
         if (ksl_item == NULL) die("unknown character: %c\n", c);
         // don't allow duplicates in lookup
         if (keysyms_lookup_find_char(*ksl, size, c) == NULL) {
@@ -497,18 +518,18 @@ void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
 /**
  * Acquire a Xorg keyboard grab on the root window.
  */
-void initialise_input () {
+void initialise_input (xcw_state_t* state) {
     // wait a little for other programs to release the keyboard
     // since this program is likely to be launched from a hotkey daemon
     struct timespec ts = { 0, 1000000 }; // 1ms
     int status;
     for (int s = 0; s < 1000; s++) { // up to 1s total
         xcb_grab_keyboard_cookie_t gkc = xcb_grab_keyboard(
-            xcon, 0, xroot, XCB_CURRENT_TIME,
+            state->xcon, 0, state->xroot, XCB_CURRENT_TIME,
             XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC);
         xcb_grab_keyboard_reply_t* gkr;
 
-        if ((gkr = xcb_grab_keyboard_reply(xcon, gkc, NULL))) {
+        if ((gkr = xcb_grab_keyboard_reply(state->xcon, gkc, NULL))) {
             status = gkr->status;
             free(gkr);
             if (status == XCB_GRAB_STATUS_ALREADY_GRABBED) {
@@ -538,24 +559,24 @@ void initialise_input () {
  * x, y: absolute screen location
  * w, h: window size
  */
-xcb_window_t* overlay_create (int x, int y, int w, int h) {
+xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     xcb_window_t* win = malloc(sizeof(xcb_window_t));
-    *win = xcb_generate_id(xcon);
+    *win = xcb_generate_id(state->xcon);
     uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
                      XCB_CW_SAVE_UNDER | XCB_CW_EVENT_MASK);
     uint32_t values[] = {
         BG_COLOUR, 1, 1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS
     };
     xcb_void_cookie_t cwc = xcb_create_window_checked(
-        xcon, XCB_COPY_FROM_PARENT, *win, xroot, 0, 0, 1, 1, 0,
+        state->xcon, XCB_COPY_FROM_PARENT, *win, state->xroot, 0, 0, 1, 1, 0,
         XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, mask, values);
-    xorg_check_request(cwc, "create_window");
+    xorg_check_request(state->xcon, cwc, "create_window");
 
     xcb_icccm_set_wm_class(
-        xcon, *win, sizeof(OVERLAY_WINDOW_CLASS), OVERLAY_WINDOW_CLASS);
-    xorg_window_move_resize(*win, x, y, w, h);
-    xcb_void_cookie_t mwc = xcb_map_window_checked(xcon, *win);
-    xorg_check_request(mwc, "map_window");
+        state->xcon, *win, sizeof(OVERLAY_WINDOW_CLASS), OVERLAY_WINDOW_CLASS);
+    xorg_window_move_resize(state->xcon, *win, x, y, w, h);
+    xcb_void_cookie_t mwc = xcb_map_window_checked(state->xcon, *win);
+    xorg_check_request(state->xcon, mwc, "map_window");
     return win;
 }
 
@@ -565,14 +586,14 @@ xcb_window_t* overlay_create (int x, int y, int w, int h) {
  *
  * win: the overlay window
  */
-xcb_gc_t* overlay_get_bg_gc (xcb_window_t win) {
+xcb_gc_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(xcon);
     uint32_t mask = XCB_GC_FOREGROUND;
     uint32_t value_list[] = { BG_COLOUR };
     xcb_void_cookie_t cgc = (
         xcb_create_gc_checked(xcon, *gc, win, mask, value_list));
-    xorg_check_request(cgc, "create_gc");
+    xorg_check_request(xcon, cgc, "create_gc");
     return gc;
 }
 
@@ -583,11 +604,12 @@ xcb_gc_t* overlay_get_bg_gc (xcb_window_t win) {
  * win: the overlay window
  * font_name: name of the font used to render the text
  */
-xcb_gc_t* overlay_get_font_gc (xcb_window_t win, char *font_name) {
+xcb_gc_t* overlay_get_font_gc (xcb_connection_t* xcon,
+                               xcb_window_t win, char *font_name) {
     xcb_font_t font = xcb_generate_id(xcon);
     xcb_void_cookie_t ofc = (
         xcb_open_font_checked(xcon, font, strlen(font_name), font_name));
-    xorg_check_request(ofc, "open_font");
+    xorg_check_request(xcon, ofc, "open_font");
 
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(xcon);
@@ -595,7 +617,7 @@ xcb_gc_t* overlay_get_font_gc (xcb_window_t win, char *font_name) {
     uint32_t value_list[] = { FG_COLOUR, BG_COLOUR, font };
     xcb_void_cookie_t cgc = (
         xcb_create_gc_checked(xcon, *gc, win, mask, value_list));
-    xorg_check_request(cgc, "create_gc");
+    xorg_check_request(xcon, cgc, "create_gc");
 
     xcb_close_font(xcon, font);
     return gc;
@@ -610,15 +632,16 @@ xcb_gc_t* overlay_get_font_gc (xcb_window_t win, char *font_name) {
  *     function does nothing)
  * text: text to render (null-terminated)
  */
-void overlay_set_text (window_setup_t* wsetup, char* text) {
+void overlay_set_text (xcb_connection_t* xcon,
+                       window_setup_t* wsetup, char* text) {
     if (wsetup->overlay_window == NULL) return;
     xcb_window_t win = *(wsetup->overlay_window);
 
     if (wsetup->overlay_bg_gc == NULL) {
-        wsetup->overlay_bg_gc = overlay_get_bg_gc(win);
+        wsetup->overlay_bg_gc = overlay_get_bg_gc(xcon, win);
     }
     if (wsetup->overlay_font_gc == NULL) {
-        wsetup->overlay_font_gc = overlay_get_font_gc(win, "fixed");
+        wsetup->overlay_font_gc = overlay_get_font_gc(xcon, win, "fixed");
     }
 
     xcb_poly_fill_rectangle(xcon, win, *(wsetup->overlay_bg_gc), 1,
@@ -634,8 +657,8 @@ void overlay_set_text (window_setup_t* wsetup, char* text) {
  *
  * text: prefix to text rendered to every overlay window (null-terminated)
  */
-void _overlays_set_text (window_setup_t* wsetups, int wsetups_size,
-                         char* text) {
+void _overlays_set_text (xcb_connection_t* xcon, window_setup_t* wsetups,
+                         int wsetups_size, char* text) {
     for (int i = 0; i < wsetups_size; i++) {
         window_setup_t* wsetup = &(wsetups[i]);
         int text_size = strlen(text);
@@ -645,10 +668,10 @@ void _overlays_set_text (window_setup_t* wsetups, int wsetups_size,
         new_text[text_size] = wsetup->character;
         new_text[text_size + 1] = '\0';
 
-        overlay_set_text(wsetup, new_text);
+        overlay_set_text(xcon, wsetup, new_text);
         if (wsetup->children != NULL) {
-            _overlays_set_text(
-                wsetup->children, wsetup->children_size, new_text);
+            _overlays_set_text(xcon, wsetup->children, wsetup->children_size,
+                               new_text);
         }
 
         free(new_text);
@@ -657,15 +680,12 @@ void _overlays_set_text (window_setup_t* wsetups, int wsetups_size,
 
 
 /**
- * Update text on all overlay windows in a setup structure.
- *
- * wsetups: array containing structures containing overlay windows, possibly
- *    nested
+ * Update text on all overlay windows.
  */
-void overlays_set_text (window_setup_t* wsetups, int wsetups_size) {
+void overlays_set_text (xcw_state_t* state) {
     char* text = "";
-    _overlays_set_text(wsetups, wsetups_size, text);
-    xcb_flush(xcon);
+    _overlays_set_text(state->xcon, state->wsetups, state->wsetups_size, text);
+    xcb_flush(state->xcon);
 }
 
 
@@ -676,13 +696,11 @@ void overlays_set_text (window_setup_t* wsetups, int wsetups_size) {
  * See `initialise_window_tracking`.
  *
  * remain_depth: number of nested levels remaining (we choose a character in the
- * string to type at every level; if 0, we choose the last character)
+ *     string to type at every level; if 0, we choose the last character)
  */
-void _initialise_window_tracking (
-    keysyms_lookup_t* ksl, int ksl_size,
-    xcb_window_t* windows, int windows_size, int remain_depth,
-    window_setup_t** wsetups, int* wsetups_size
-) {
+void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
+                                  xcb_window_t* windows, int windows_size,
+                                  window_setup_t** wsetups, int* wsetups_size) {
     if (remain_depth == 0) {
         *wsetups = calloc(windows_size, sizeof(window_setup_t));
         *wsetups_size = windows_size;
@@ -691,8 +709,8 @@ void _initialise_window_tracking (
 
         for (int i = 0; i < windows_size; i++) {
             // an xcb_window_t is an xcb_drawable_t
-            ggc = xcb_get_geometry(xcon, windows[i]);
-            if (!(ggr = xcb_get_geometry_reply(xcon, ggc, NULL))) {
+            ggc = xcb_get_geometry(state->xcon, windows[i]);
+            if (!(ggr = xcb_get_geometry_reply(state->xcon, ggc, NULL))) {
                 die("get_geometry\n");
             }
 
@@ -700,12 +718,15 @@ void _initialise_window_tracking (
             xcb_rectangle_t* rectp = malloc(sizeof(xcb_rectangle_t));
             *rectp = rect;
             // guaranteed that ksl_size <= windows_size
-            xcb_window_t* w = overlay_create(
-                ggr->border_width + ggr->x, ggr->border_width + ggr->y,
+            xcb_window_t* overlay_window = overlay_create(
+                state, ggr->border_width + ggr->x, ggr->border_width + ggr->y,
                 rect.width, rect.height);
+            xcb_window_t* window = malloc(sizeof(xcb_window_t));
+            *window = windows[i];
 
             window_setup_t wsetup = {
-                w, NULL, NULL, rectp, &windows[i], ksl[i].character, NULL, 0
+                overlay_window, NULL, NULL, rectp, window,
+                state->ksl[i].character, NULL, 0
             };
             (*wsetups)[i] = wsetup;
         }
@@ -713,7 +734,7 @@ void _initialise_window_tracking (
 
     } else {
         // number of windows 'used up' per iteration
-        int p = (int)(pow(ksl_size, remain_depth));
+        int p = (int)(pow(state->ksl_size, remain_depth));
         // required number of iterations to use all windows
         int n = (int)(ceil((float)windows_size / (float)p));
         *wsetups = calloc(n, sizeof(window_setup_t));
@@ -723,11 +744,11 @@ void _initialise_window_tracking (
             window_setup_t* children = NULL;
             int children_size;
             _initialise_window_tracking(
-                ksl, ksl_size,
+                state, remain_depth - 1,
                 windows + (i * p), min(windows_size - (i * p), p),
-                remain_depth - 1, &children, &children_size);
+                &children, &children_size);
             window_setup_t wsetup = {
-                NULL, NULL, NULL, NULL, NULL, ksl[i].character,
+                NULL, NULL, NULL, NULL, NULL, state->ksl[i].character,
                 children, children_size
             };
             (*wsetups)[i] = wsetup;
@@ -740,21 +761,44 @@ void _initialise_window_tracking (
  * Construct data for tracked windows in a nested structure matching the
  * characters that need to be typed to choose them.
  *
- * ksl: lookup for allowed characters
+ * state: the result is stored in here
  * windows: tracked windows
- * wsetups (output): generated structure
- * wsetups_size (output): size of `wsetups`
  */
-void initialise_window_tracking (
-    keysyms_lookup_t* ksl, int ksl_size,
-    xcb_window_t* windows, int windows_size,
-    window_setup_t** wsetups, int* wsetups_size
-) {
+void initialise_window_tracking (xcw_state_t* state,
+                                 xcb_window_t* windows, int windows_size) {
     _initialise_window_tracking(
-        ksl, ksl_size, windows, windows_size,
+        state,
         // the length of each tracking string
-        (int)(log(max(windows_size - 1, 1)) / log(ksl_size)),
-        wsetups, wsetups_size);
+        (int)(log(max(windows_size - 1, 1)) / log(state->ksl_size)),
+        windows, windows_size, &(state->wsetups), &(state->wsetups_size));
+}
+
+
+/**
+ * See `wsetup_debug_print`.
+ *
+ * depth: current depth in the structure, starting at 0, used for indentation
+ */
+void _wsetup_debug_print (window_setup_t* wsetup, int depth) {
+    printf("[wsetup] ");
+    for (int i = 0; i < depth; i++) printf("  ");
+    printf("%c", wsetup->character);
+    if (wsetup->window == NULL) printf("\n");
+    else printf(" %x\n", *(wsetup->window));
+
+    if (wsetup->children != NULL) {
+        for (int i = 0; i < wsetup->children_size; i++) {
+            _wsetup_debug_print(&(wsetup->children[i]), depth + 1);
+        }
+    }
+}
+
+
+/**
+ * Print a setup structure to stdout.
+ */
+void wsetup_debug_print (window_setup_t* wsetup) {
+    _wsetup_debug_print(wsetup, 0);
 }
 
 
@@ -762,16 +806,16 @@ void initialise_window_tracking (
  * Destroy all overlay windows in a setup structure and free the structure's
  * used memory.
  */
-void wsetup_free (window_setup_t* wsetup) {
+void wsetup_free (xcb_connection_t* xcon, window_setup_t* wsetup) {
     if (wsetup->children != NULL) {
         for (int i = 0; i < wsetup->children_size; i++) {
-            window_setup_t* child = &((wsetup->children)[i]);
+            window_setup_t* child = &(wsetup->children[i]);
             xcb_window_t* w = child->overlay_window;
             if (w != NULL) {
                 xcb_destroy_window_checked(xcon, *w);
                 free(child->overlay_rect);
             }
-            wsetup_free(child);
+            wsetup_free(xcon, child);
 
             if (wsetup->overlay_bg_gc != NULL) {
                 xcb_free_gc(xcon, *(wsetup->overlay_bg_gc));
@@ -790,74 +834,35 @@ void wsetup_free (window_setup_t* wsetup) {
 }
 
 
-// mutually recursive with `wsetups_descend`
-void wsetup_descend(window_setup_t* wsetup, window_setup_t** new_wsetups,
-                    int* new_wsetups_size);
 /**
- * Reduce a setup structure recursively, if possible, by removing redundant
- * 'outer layers'.  Updates text rendered on overlay windows.  Exits the process
- * if we end up with 0 or 1 windows.
- *
- * wsetups: array of setup structures
- * new_wsetups (output): reduced structure
- * new_wsetups_size (output): `new_wsetups` size
+ * Choose the window in a setup structure or replace the current array of setup
+ * structures with its children.  Updates text rendered on overlay windows.
+ * Exits the process if choose a window.
  */
-void wsetups_descend (window_setup_t* wsetups, int wsetups_size,
-                      window_setup_t** new_wsetups, int* new_wsetups_size) {
-    if (wsetups_size == 0) {
-        exit_no_match();
-    } else if (wsetups_size == 1) {
-        wsetup_descend(&wsetups[0], new_wsetups, new_wsetups_size);
-    } else {
-        *new_wsetups = wsetups;
-        *new_wsetups_size = wsetups_size;
-        overlays_set_text(*new_wsetups, *new_wsetups_size);
-    }
-}
-
-
-/**
- * Reduce a setup structure recursively, if possible, by removing redundant
- * 'outer layers'.  Updates text rendered on overlay windows.  Exits the process
- * if we end up with 0 or 1 windows.
- *
- * wsetups: setup structure
- * new_wsetups (output): reduced structure
- * new_wsetups_size (output): `new_wsetups` size
- */
-void wsetup_descend (window_setup_t* wsetup,
-                     window_setup_t** new_wsetups, int* new_wsetups_size) {
-    if (wsetup->window == NULL) {
-        wsetups_descend(wsetup->children, wsetup->children_size,
-                        new_wsetups, new_wsetups_size);
-    } else if (wsetup->children_size == 0) {
+void wsetup_choose (xcw_state_t* state, window_setup_t* wsetup) {
+    if (wsetup->window != NULL && wsetup->children_size == 0) {
         choose_window(*(wsetup->window));
     } else {
-        wsetups_descend(wsetup->children, wsetup->children_size,
-                        new_wsetups, new_wsetups_size);
+        state->wsetups = wsetup->children;
+        state->wsetups_size = wsetup->children_size;
+        overlays_set_text(state);
     }
 }
 
 
 /**
- * Reduce a setup structure by choosing an item, then reduce recursively like
- * `wsetup_descend`.  Frees removed parts of the structure.
+ * Reduce a setup structure by choosing an item.  Frees removed parts of the
+ * structure.
  *
- * wsetups: array of setup structures
  * index: array index in `wsetups` to choose
- * new_wsetups (output): reduced structure
- * new_wsetups_size (output): `new_wsetups` size
  */
-void wsetups_descend_by_index (
-    window_setup_t* wsetups, int wsetups_size, int index,
-    window_setup_t** new_wsetups, int* new_wsetups_size
-) {
+void wsetups_descend_by_index (xcw_state_t* state, int index) {
+    // state changes during iteration
+    window_setup_t* wsetups = state->wsetups;
+    int wsetups_size = state->wsetups_size;
     for (int i = 0; i < wsetups_size; i++) {
-        if (i == index) {
-            wsetup_descend(&(wsetups[i]), new_wsetups, new_wsetups_size);
-        } else {
-            wsetup_free(&(wsetups[i]));
-        }
+        if (i == index) wsetup_choose(state, &(wsetups[i]));
+        else wsetup_free(state->xcon, &(wsetups[i]));
     }
 }
 
@@ -867,29 +872,19 @@ void wsetups_descend_by_index (
  * like `wsetup_descend`.  Exits the process if the character doesn't correspond
  * to any options.  Frees removed parts of the structure.
  *
- * wsetups: array of setup structures
  * c: character to choose
- * new_wsetups (output): reduced structure
- * new_wsetups_size (output): `new_wsetups` size
  */
-void wsetups_descend_by_char (
-    window_setup_t* wsetups, int wsetups_size, char c,
-    window_setup_t** new_wsetups, int* new_wsetups_size
-) {
+void wsetups_descend_by_char (xcw_state_t* state, char c) {
     int index = -1;
-    for (int i = 0; i < wsetups_size; i++) {
-        if (wsetups[i].character == c) {
+    for (int i = 0; i < state->wsetups_size; i++) {
+        if (state->wsetups[i].character == c) {
             index = i;
             break;
         }
     }
 
-    if (index == -1) {
-        exit_no_match();
-    } else {
-        wsetups_descend_by_index(wsetups, wsetups_size, index,
-                                 new_wsetups, new_wsetups_size);
-    }
+    if (index == -1) exit_no_match();
+    else wsetups_descend_by_index(state, index);
 }
 
 
@@ -901,15 +896,16 @@ void wsetups_descend_by_char (
  * windows (output): window IDs
  * windows_size (output): size of `windows`
  */
-void initialise_tracked_windows (xcb_window_t** windows, int* windows_size) {
+void initialise_tracked_windows (xcw_state_t* state,
+                                 xcb_window_t** windows, int* windows_size) {
     xcb_window_t* all_windows;
     int all_windows_size;
-    xorg_get_windows(&all_windows, &all_windows_size);
+    xorg_get_windows(state, &all_windows, &all_windows_size);
     int managed_windows_defined;
     xcb_window_t* managed_windows;
     int managed_windows_size;
-    xorg_get_managed_windows(&managed_windows_defined, &managed_windows,
-                             &managed_windows_size);
+    xorg_get_managed_windows(state, &managed_windows_defined,
+                             &managed_windows, &managed_windows_size);
 
     *windows = calloc(all_windows_size, sizeof(xcb_window_t));
     int size = 0;
@@ -920,9 +916,9 @@ void initialise_tracked_windows (xcb_window_t** windows, int* windows_size) {
                 all_windows[i], managed_windows, managed_windows_size
             )) &&
 
-            xorg_window_normal(all_windows[i]) &&
+            xorg_window_normal(state->xcon, all_windows[i]) &&
 
-            ewmh_window_normal(all_windows[i])
+            ewmh_window_normal(state, all_windows[i])
         ) {
             (*windows)[size] = all_windows[i];
             size += 1;
@@ -939,26 +935,16 @@ void initialise_tracked_windows (xcb_window_t** windows, int* windows_size) {
 /**
  * Make adjustments to tracking windows based on a keypress event.  Exits the
  * process if this chooses a window.
- *
- * ksl: lookup for allowed characters
- * wsetups: current window tracking information
- * new_wsetups (output): new window tracking information after adjustments
- * new_wsetups_size (output): size of `new_wsetups`
  */
-void handle_keypress (
-    xcb_key_press_event_t* kp, keysyms_lookup_t* ksl, int ksl_size,
-    window_setup_t* wsetups, int wsetups_size,
-    window_setup_t** new_wsetups, int* new_wsetups_size
-) {
-    xcb_keysym_t ksym = xcb_key_press_lookup_keysym(ksymbols, kp, 0);
+void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
+    xcb_keysym_t ksym = xcb_key_press_lookup_keysym(state->ksymbols, kp, 0);
     keysyms_lookup_t* ksl_item = (
-        keysyms_lookup_find_keysym(ksl, ksl_size, ksym));
+        keysyms_lookup_find_keysym(state->ksl, state->ksl_size, ksym));
 
     if (ksl_item == NULL) {
         exit_no_match();
     } else {
-        wsetups_descend_by_char(wsetups, wsetups_size, ksl_item->character,
-                                new_wsetups, new_wsetups_size);
+        wsetups_descend_by_char(state, ksl_item->character);
     }
 }
 
@@ -967,21 +953,28 @@ int main (int argc, char** argv) {
     keysyms_lookup_t* ksl;
     int ksl_size;
     parse_args(argc, argv, &ksl, &ksl_size);
-    initialise_xorg();
-    initialise_input();
+    xcw_state_t* state;
+    initialise_xorg(&state);
+    state->ksl = ksl;
+    state-> ksl_size = ksl_size;
+    initialise_input(state);
 
     xcb_window_t* windows;
     int windows_size;
-    window_setup_t* wsetups = NULL;
-    int wsetups_size;
-    initialise_tracked_windows(&windows, &windows_size);
-    if (windows_size == 0) exit_no_match(); // nothing to do
-    initialise_window_tracking(ksl, ksl_size, windows, windows_size,
-                               &wsetups, &wsetups_size);
-    wsetups_descend(wsetups, wsetups_size, &wsetups, &wsetups_size);
+    initialise_tracked_windows(state, &windows, &windows_size);
+    initialise_window_tracking(state, windows, windows_size);
+    free(windows);
+
+    if (state->wsetups_size == 0) {
+        exit_no_match();
+    } else if (state->wsetups_size == 1) {
+        wsetup_choose(state, &(state->wsetups[0]));
+    } else {
+        overlays_set_text(state);
+    }
 
     xcb_generic_event_t *event;
-    while (1) if ((event = xcb_poll_for_event(xcon))) {
+    while (1) if ((event = xcb_poll_for_event(state->xcon))) {
         switch (event->response_type & ~0x80) {
             case 0: {
                 xcb_generic_error_t* evterr = (xcb_generic_error_t*) event;
@@ -989,12 +982,11 @@ int main (int argc, char** argv) {
                 break;
             }
             case XCB_EXPOSE: {
-                overlays_set_text(wsetups, wsetups_size);
+                overlays_set_text(state);
                 break;
             }
             case XCB_KEY_PRESS: {
-                handle_keypress((xcb_key_press_event_t*)event, ksl, ksl_size,
-                                wsetups, wsetups_size, &wsetups, &wsetups_size);
+                handle_keypress(state, (xcb_key_press_event_t*)event);
                 break;
             }
         }
