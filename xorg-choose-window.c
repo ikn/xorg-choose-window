@@ -31,7 +31,6 @@ specific language governing permissions and limitations under the License.
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
-// change wsetup->overlay_rect to be just size
 
 // TODO (improvements)
 // help/manpage
