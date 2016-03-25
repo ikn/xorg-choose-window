@@ -30,7 +30,6 @@ specific language governing permissions and limitations under the License.
 // TODO (fixes)
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
-// open font once, globally
 // structures for:
 //  - wsetups, size, new wsetups, new size
 //  - wsetup.overlay_*, wsetup.window
@@ -93,6 +92,7 @@ typedef struct window_setup_t {
  * xroot: the root window
  * ewmh: the state for `xcb_ewmh`
  * ksymbols: cached key symbols
+ * overlay_font: font used to render text on overlays
  * ksl: keys available for use
  * wsetups: array of setup structures
  */
@@ -101,6 +101,7 @@ typedef struct xcw_state_t {
     xcb_window_t xroot;
     xcb_ewmh_connection_t ewmh;
     xcb_key_symbols_t* ksymbols;
+    xcb_font_t overlay_font;
     keysyms_lookup_t* ksl;
     int ksl_size;
     window_setup_t* wsetups;
@@ -114,6 +115,10 @@ typedef struct xcw_state_t {
  * Text colour for overlay windows.
  */
 int FG_COLOUR = 0xffffffff;
+/**
+ * Name of the font used to render text on overlay windows.
+ */
+char* OVERLAY_FONT_NAME = "fixed";
 /**
  * Background colour for overlay windows.
  */
@@ -433,8 +438,15 @@ void initialise_xorg (xcw_state_t** state) {
     ksymbols = xcb_key_symbols_alloc(xcon);
     if (ksymbols == NULL) die("key_symbols_alloc\n");
 
+    xcb_font_t overlay_font = xcb_generate_id(xcon);
+    xcb_void_cookie_t ofc = xcb_open_font_checked(
+        xcon, overlay_font, strlen(OVERLAY_FONT_NAME), OVERLAY_FONT_NAME);
+    xorg_check_request(xcon, ofc, "open_font");
+
     *state = malloc(sizeof(xcw_state_t));
-    xcw_state_t local_state = { xcon, xroot, ewmh, ksymbols, NULL, 0, NULL, 0 };
+    xcw_state_t local_state = {
+        xcon, xroot, ewmh, ksymbols, overlay_font, NULL, 0, NULL, 0
+    };
     **state = local_state;
 }
 
@@ -602,24 +614,15 @@ xcb_gc_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
  * Create a graphics context for drawing the text of an overlay window.
  *
  * win: the overlay window
- * font_name: name of the font used to render the text
  */
-xcb_gc_t* overlay_get_font_gc (xcb_connection_t* xcon,
-                               xcb_window_t win, char *font_name) {
-    xcb_font_t font = xcb_generate_id(xcon);
-    xcb_void_cookie_t ofc = (
-        xcb_open_font_checked(xcon, font, strlen(font_name), font_name));
-    xorg_check_request(xcon, ofc, "open_font");
-
+xcb_gc_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
-    *gc = xcb_generate_id(xcon);
+    *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND | XCB_GC_FONT;
-    uint32_t value_list[] = { FG_COLOUR, BG_COLOUR, font };
+    uint32_t value_list[] = { FG_COLOUR, BG_COLOUR, state->overlay_font };
     xcb_void_cookie_t cgc = (
-        xcb_create_gc_checked(xcon, *gc, win, mask, value_list));
-    xorg_check_request(xcon, cgc, "create_gc");
-
-    xcb_close_font(xcon, font);
+        xcb_create_gc_checked(state->xcon, *gc, win, mask, value_list));
+    xorg_check_request(state->xcon, cgc, "create_gc");
     return gc;
 }
 
@@ -632,21 +635,21 @@ xcb_gc_t* overlay_get_font_gc (xcb_connection_t* xcon,
  *     function does nothing)
  * text: text to render (null-terminated)
  */
-void overlay_set_text (xcb_connection_t* xcon,
+void overlay_set_text (xcw_state_t* state,
                        window_setup_t* wsetup, char* text) {
     if (wsetup->overlay_window == NULL) return;
     xcb_window_t win = *(wsetup->overlay_window);
 
     if (wsetup->overlay_bg_gc == NULL) {
-        wsetup->overlay_bg_gc = overlay_get_bg_gc(xcon, win);
+        wsetup->overlay_bg_gc = overlay_get_bg_gc(state->xcon, win);
     }
     if (wsetup->overlay_font_gc == NULL) {
-        wsetup->overlay_font_gc = overlay_get_font_gc(xcon, win, "fixed");
+        wsetup->overlay_font_gc = overlay_get_font_gc(state, win);
     }
 
-    xcb_poly_fill_rectangle(xcon, win, *(wsetup->overlay_bg_gc), 1,
+    xcb_poly_fill_rectangle(state->xcon, win, *(wsetup->overlay_bg_gc), 1,
                             wsetup->overlay_rect);
-    xcb_image_text_8(xcon, strlen(text), win, *(wsetup->overlay_font_gc),
+    xcb_image_text_8(state->xcon, strlen(text), win, *(wsetup->overlay_font_gc),
                      30, 20, text);
 }
 
@@ -655,9 +658,11 @@ void overlay_set_text (xcb_connection_t* xcon,
  * See `overlays_set_text`.  `xcb_flush` should be called after calling * this
  * function.
  *
+ * wsetups: array of setup structures containing overlay windows to render text
+ *     on (recursively)
  * text: prefix to text rendered to every overlay window (null-terminated)
  */
-void _overlays_set_text (xcb_connection_t* xcon, window_setup_t* wsetups,
+void _overlays_set_text (xcw_state_t* state, window_setup_t* wsetups,
                          int wsetups_size, char* text) {
     for (int i = 0; i < wsetups_size; i++) {
         window_setup_t* wsetup = &(wsetups[i]);
@@ -668,9 +673,9 @@ void _overlays_set_text (xcb_connection_t* xcon, window_setup_t* wsetups,
         new_text[text_size] = wsetup->character;
         new_text[text_size + 1] = '\0';
 
-        overlay_set_text(xcon, wsetup, new_text);
+        overlay_set_text(state, wsetup, new_text);
         if (wsetup->children != NULL) {
-            _overlays_set_text(xcon, wsetup->children, wsetup->children_size,
+            _overlays_set_text(state, wsetup->children, wsetup->children_size,
                                new_text);
         }
 
@@ -684,7 +689,7 @@ void _overlays_set_text (xcb_connection_t* xcon, window_setup_t* wsetups,
  */
 void overlays_set_text (xcw_state_t* state) {
     char* text = "";
-    _overlays_set_text(state->xcon, state->wsetups, state->wsetups_size, text);
+    _overlays_set_text(state, state->wsetups, state->wsetups_size, text);
     xcb_flush(state->xcon);
 }
 
