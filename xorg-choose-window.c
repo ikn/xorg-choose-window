@@ -30,19 +30,16 @@ specific language governing permissions and limitations under the License.
 // TODO (fixes)
 // sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
-// structures for:
-//  - wsetups, size, new wsetups, new size
-//  - wsetup.overlay_*, wsetup.window
+// structure for wsetup.overlay_*, wsetup.window
 // change wsetup->overlay_rect to be just size
-// xcb_image_text_8: handle case with text size > 255
 
 // TODO (improvements)
 // help/manpage
-// configurable font/text size/colours/placement/padding, better defaults
+// larger default font
+// centre text on windows
+// configurable font/text size/colours
 // take window IDs as whitelist/blacklist
 // options for output format (hex)
-// better expose redrawing (only some windows/rects?)
-// work out how to clear a window instead of having a gc just for it
 
 
 // -- types
@@ -200,11 +197,12 @@ int max (int a, int b) {
 
 
 /**
- * Print a message to stderr and exit the process with a failure status.  Takes
- * arguments like `*printf`.
+ * Print an error message to stderr and exit the process with a failure status.
+ * Takes arguments like `*printf`.
  */
-void die (char *fmt, ...) {
+void xcw_die (char *fmt, ...) {
     va_list args;
+    fprintf(stderr, "error: ");
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
     va_end(args);
@@ -213,9 +211,21 @@ void die (char *fmt, ...) {
 
 
 /**
+ * Print a warning message to stderr.  Takes arguments like `*printf`.
+ */
+void xcw_warn (char *fmt, ...) {
+    va_list args;
+    fprintf(stderr, "warning: ");
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
+
+/**
  * Exit the process with a status indicating a window was chosen.
  */
-void exit_match () {
+void xcw_exit_match () {
     exit(0);
 }
 
@@ -223,7 +233,7 @@ void exit_match () {
 /**
  * Exit the process with a status indicating no window was chosen.
  */
-void exit_no_match () {
+void xcw_exit_no_match () {
     exit(0);
 }
 
@@ -233,7 +243,7 @@ void exit_no_match () {
  */
 void choose_window (xcb_window_t window) {
     printf("%d\n", window);
-    exit_match();
+    xcw_exit_match();
 }
 
 
@@ -248,7 +258,7 @@ void choose_window (xcb_window_t window) {
 void xorg_check_request (xcb_connection_t* xcon,
                          xcb_void_cookie_t cookie, char *msg) {
     xcb_generic_error_t *error = xcb_request_check(xcon, cookie);
-    if (error) die("xcb error: %s (%d)\n", msg, error->error_code);
+    if (error) xcw_die("xcb error: %s (%d)\n", msg, error->error_code);
 }
 
 
@@ -276,7 +286,7 @@ int xorg_window_has_property (xcb_connection_t* xcon,
     xcb_list_properties_cookie_t lpc = xcb_list_properties(xcon, window);
     xcb_list_properties_reply_t* lpr;
     if (!(lpr = xcb_list_properties_reply(xcon, lpc, NULL))) {
-        die("list_properties");
+        xcw_die("list_properties");
     }
 
     xcb_atom_t* props = xcb_list_properties_atoms(lpr);
@@ -302,7 +312,7 @@ int xorg_window_normal (xcb_connection_t* xcon, xcb_window_t window) {
         xcb_get_window_attributes(xcon, window));
     xcb_get_window_attributes_reply_t* gwar;
     if (!(gwar = xcb_get_window_attributes_reply(xcon, gwac, NULL))) {
-        die("get_window_attributes\n");
+        xcw_die("get_window_attributes\n");
     }
 
     return (
@@ -321,7 +331,7 @@ int ewmh_window_normal (xcw_state_t* state, xcb_window_t window) {
                          state->ewmh._NET_WM_WINDOW_TYPE, XCB_ATOM_ATOM, 0, 1));
     xcb_get_property_reply_t* gpr;
     if (!(gpr = xcb_get_property_reply(state->xcon, gpc, NULL))) {
-        die("get_property _NET_WM_WINDOW_TYPE\n");
+        xcw_die("get_property _NET_WM_WINDOW_TYPE\n");
     }
     uint32_t* window_type = (uint32_t*)xcb_get_property_value(gpr);
     int prop_len = xcb_get_property_value_length(gpr);
@@ -345,7 +355,7 @@ void xorg_get_windows (xcw_state_t* state,
     xcb_query_tree_cookie_t qtc = xcb_query_tree(state->xcon, state->xroot);
     xcb_query_tree_reply_t* qtr;
     if (!(qtr = xcb_query_tree_reply(state->xcon, qtc, NULL))) {
-        die("query_tree\n");
+        xcw_die("query_tree\n");
     }
     xcb_window_t* referenced_windows = xcb_query_tree_children(qtr);
     int size = xcb_query_tree_children_length(qtr);
@@ -379,7 +389,7 @@ void xorg_get_managed_windows (xcw_state_t* state, int* is_defined,
                              MAX_WINDOWS));
         xcb_get_property_reply_t* gpr;
         if (!(gpr = xcb_get_property_reply(state->xcon, gpc, NULL))) {
-            die("get_property _NET_CLIENT_LIST\n");
+            xcw_die("get_property _NET_CLIENT_LIST\n");
         }
         xcb_window_t* referenced_windows = (
             (xcb_window_t*)xcb_get_property_value(gpr));
@@ -424,19 +434,21 @@ void initialise_xorg (xcw_state_t** state) {
     int default_screen; // unused
     xcb_screen_t *screen;
     xcb_connection_t* xcon = xcb_connect(NULL, &default_screen);
-    if (xcb_connection_has_error(xcon)) die("connect\n");
+    if (xcb_connection_has_error(xcon)) xcw_die("connect\n");
 
     screen = xcb_setup_roots_iterator(xcb_get_setup(xcon)).data;
-    if (screen == NULL) die("no screens\n");
+    if (screen == NULL) xcw_die("no screens\n");
     xcb_window_t xroot = screen->root;
 
     xcb_ewmh_connection_t ewmh;
     xcb_intern_atom_cookie_t *ewmhc = xcb_ewmh_init_atoms(xcon, &ewmh);
-    if (!xcb_ewmh_init_atoms_replies(&ewmh, ewmhc, NULL)) die("ewmh init\n");
+    if (!xcb_ewmh_init_atoms_replies(&ewmh, ewmhc, NULL)) {
+        xcw_die("ewmh init\n");
+    }
 
     xcb_key_symbols_t* ksymbols;
     ksymbols = xcb_key_symbols_alloc(xcon);
-    if (ksymbols == NULL) die("key_symbols_alloc\n");
+    if (ksymbols == NULL) xcw_die("key_symbols_alloc\n");
 
     xcb_font_t overlay_font = xcb_generate_id(xcon);
     xcb_void_cookie_t ofc = xcb_open_font_checked(
@@ -501,7 +513,7 @@ keysyms_lookup_t* keysyms_lookup_find_keysym (
  * ksl_size (output): size of `ksl`
  */
 void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
-    if (argc != 2) die("expected exactly one argument\n");
+    if (argc != 2) xcw_die("expected exactly one argument\n");
 
     // character pool argument: check validity of characters, compile lookup
     char* char_pool = argv[1];
@@ -513,7 +525,7 @@ void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
         char c = char_pool[i];
         keysyms_lookup_t* ksl_item = keysyms_lookup_find_char(
             ALL_KEYSYMS_LOOKUP, ALL_KEYSYMS_LOOKUP_SIZE, c);
-        if (ksl_item == NULL) die("unknown character: %c\n", c);
+        if (ksl_item == NULL) xcw_die("unknown character: %c\n", c);
         // don't allow duplicates in lookup
         if (keysyms_lookup_find_char(*ksl, size, c) == NULL) {
             (*ksl)[size] = *ksl_item;
@@ -521,7 +533,7 @@ void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
         }
     }
 
-    if (size < 2) die("expected at least two characters\n");
+    if (size < 2) xcw_die("expected at least two characters\n");
     *ksl = realloc(*ksl, sizeof(keysyms_lookup_t) * size);
     *ksl_size = size;
 }
@@ -550,15 +562,15 @@ void initialise_input (xcw_state_t* state) {
             } else if (status == XCB_GRAB_STATUS_SUCCESS) {
                 break;
             } else {
-                die("grab_keyboard: %d\n", status);
+                xcw_die("grab_keyboard: %d\n", status);
             }
         } else {
-            die("grab_keyboard\n");
+            xcw_die("grab_keyboard\n");
         }
     }
 
     if (status == XCB_GRAB_STATUS_ALREADY_GRABBED) {
-        die("grab_keyboard: %d\n", status);
+        xcw_die("grab_keyboard: %d\n", status);
     }
 }
 
@@ -633,7 +645,7 @@ xcb_gc_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
  *
  * wsetup: containing the overlay window (if there is no overlay window, this
  *     function does nothing)
- * text: text to render (null-terminated)
+ * text: text to render (null-terminated, must be at most 255 characters)
  */
 void overlay_set_text (xcw_state_t* state,
                        window_setup_t* wsetup, char* text) {
@@ -649,8 +661,8 @@ void overlay_set_text (xcw_state_t* state,
 
     xcb_poly_fill_rectangle(state->xcon, win, *(wsetup->overlay_bg_gc), 1,
                             wsetup->overlay_rect);
-    xcb_image_text_8(state->xcon, strlen(text), win, *(wsetup->overlay_font_gc),
-                     30, 20, text);
+    xcb_image_text_8(state->xcon, min(strlen(text), 255), win,
+                     *(wsetup->overlay_font_gc), 30, 20, text);
 }
 
 
@@ -664,9 +676,14 @@ void overlay_set_text (xcw_state_t* state,
  */
 void _overlays_set_text (xcw_state_t* state, window_setup_t* wsetups,
                          int wsetups_size, char* text) {
-    for (int i = 0; i < wsetups_size; i++) {
+    int text_size = strlen(text);
+    // there's no way we're every going to reach 255 characters with the
+    // current setup; this is just in case extra static text gets added
+    if (text_size + 1 > 255) {
+        xcw_warn("refusing to render text longer than 255 characters\n");
+
+    } else for (int i = 0; i < wsetups_size; i++) {
         window_setup_t* wsetup = &(wsetups[i]);
-        int text_size = strlen(text);
         // next level down is 1 character longer, plus 1 for null
         char* new_text = calloc(text_size + 2, sizeof(char));
         strcpy(new_text, text);
@@ -716,7 +733,7 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
             // an xcb_window_t is an xcb_drawable_t
             ggc = xcb_get_geometry(state->xcon, windows[i]);
             if (!(ggr = xcb_get_geometry_reply(state->xcon, ggc, NULL))) {
-                die("get_geometry\n");
+                xcw_die("get_geometry\n");
             }
 
             xcb_rectangle_t rect = { 0, 0, ggr->width, ggr->height };
@@ -888,7 +905,7 @@ void wsetups_descend_by_char (xcw_state_t* state, char c) {
         }
     }
 
-    if (index == -1) exit_no_match();
+    if (index == -1) xcw_exit_no_match();
     else wsetups_descend_by_index(state, index);
 }
 
@@ -947,7 +964,7 @@ void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
         keysyms_lookup_find_keysym(state->ksl, state->ksl_size, ksym));
 
     if (ksl_item == NULL) {
-        exit_no_match();
+        xcw_exit_no_match();
     } else {
         wsetups_descend_by_char(state, ksl_item->character);
     }
@@ -971,7 +988,7 @@ int main (int argc, char** argv) {
     free(windows);
 
     if (state->wsetups_size == 0) {
-        exit_no_match();
+        xcw_exit_no_match();
     } else if (state->wsetups_size == 1) {
         wsetup_choose(state, &(state->wsetups[0]));
     } else {
@@ -983,7 +1000,7 @@ int main (int argc, char** argv) {
         switch (event->response_type & ~0x80) {
             case 0: {
                 xcb_generic_error_t* evterr = (xcb_generic_error_t*) event;
-                die("event loop error: %d\n", evterr->error_code);
+                xcw_die("event loop error: %d\n", evterr->error_code);
                 break;
             }
             case XCB_EXPOSE: {
