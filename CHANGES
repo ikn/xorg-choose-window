@@ -1,3 +1,7 @@
+0.1.2:
+ * fix bug: filters out the wrong windows (those specifying _NET_WM_WINDOW_TYPE
+   normal)
+
 0.1.1:
  * only display the remaining characters to type on windows
  * improved window filtering

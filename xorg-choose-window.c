@@ -339,7 +339,7 @@ int ewmh_window_normal (xcw_state_t* state, xcb_window_t window) {
     // if reply length is 0, window type isn't defined, so treat it as normal
     return (
         prop_len == 0 ||
-        window_type[0] != state->ewmh._NET_WM_WINDOW_TYPE_NORMAL);
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_NORMAL);
 }
 
 
