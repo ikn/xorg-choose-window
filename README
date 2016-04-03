@@ -1,4 +1,4 @@
-xorg-choose-window 0.1.2 by Joseph Lansdowne.
+xorg-choose-window 0.1.2-next by Joseph Lansdowne.
 
 A utility for choosing from visible windows in Xorg.  Aimed at tiling window
 managers.  For example, you might focus the chosen window, or close it, or swap
@@ -26,16 +26,10 @@ xorg-choose-window -> /usr/local/bin/xorg-choose-window
     DEPENDENCIES
 
 XCB, xcb-util-keysyms, xcb-util-wm: http://xcb.freedesktop.org/
+argp:
+ * part of glibc: https://www.gnu.org/software/libc/>
+ * argp-standalone: http://www.freebsdsoftware.org/devel/argp-standalone.html
 
     USAGE
 
-Running the executable draws a string of characters over each visible window.
-Typing one of those strings causes the program to print the corresponding window
-ID to standard output and exit.  If any non-matching keys are pressed, the
-program exits without printing anything.
-
-Run `xorg-choose-window CHARACTERS', where CHARACTERS defines those available
-for use in the displayed strings; eg. `xorg-choose-window asdfjkl' is a good
-choice for a QWERTY keyboard layout.
-
-If an error is encountered, the program exits with status 1.
+Run `xorg-choose-window --help' for usage information.

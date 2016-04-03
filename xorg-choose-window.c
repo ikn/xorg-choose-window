@@ -21,6 +21,8 @@ specific language governing permissions and limitations under the License.
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <errno.h>
+#include <argp.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 #include <xcb/xcb_ewmh.h>
@@ -28,16 +30,17 @@ specific language governing permissions and limitations under the License.
 
 
 // TODO (fixes)
-// sort out error handling (exit codes, man xcb-requests), memory management, exit cleanup
+// sort out error handling (exit codes (sysexits.h), man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
 
 // TODO (improvements)
-// help/manpage
 // larger default font
 // centre text on windows
 // configurable font/text size/colours
-// take window IDs as whitelist/blacklist
+// only show/require characters that need to be pressed (eg. aa, ao, o)
+// manpage
+// take window IDs as whitelist (like blacklist)
 // options for output format (hex)
 
 
@@ -82,6 +85,20 @@ typedef struct window_setup_t {
 
 
 /**
+ * Data generated from initial user input to the program.
+ *
+ * ksl: keys available for use
+ * blacklist: windows which should be ignored
+ */
+typedef struct xcw_input_t {
+    keysyms_lookup_t* ksl;
+    int ksl_size;
+    xcb_window_t* blacklist;
+    int blacklist_size;
+} xcw_input_t;
+
+
+/**
  * Collection of data needed throughout the runtime of the program.
  *
  * xcon: the connection to the X server
@@ -89,7 +106,7 @@ typedef struct window_setup_t {
  * ewmh: the state for `xcb_ewmh`
  * ksymbols: cached key symbols
  * overlay_font: font used to render text on overlays
- * ksl: keys available for use
+ * input: data generated from initial user input to the program
  * wsetups: array of setup structures
  */
 typedef struct xcw_state_t {
@@ -98,8 +115,7 @@ typedef struct xcw_state_t {
     xcb_ewmh_connection_t ewmh;
     xcb_key_symbols_t* ksymbols;
     xcb_font_t overlay_font;
-    keysyms_lookup_t* ksl;
-    int ksl_size;
+    xcw_input_t* input;
     window_setup_t* wsetups;
     int wsetups_size;
 } xcw_state_t;
@@ -127,6 +143,10 @@ char* OVERLAY_WINDOW_CLASS = "overlay\0xorg-choose-window";
  * Number of windows requested from _NET_CLIENT_LIST.
  */
 int MAX_WINDOWS = 1024;
+/**
+ * Printed version string (used internally by `argp`).
+ */
+const char* argp_program_version = "xorg-choose-window 0.1.2";
 
 /**
  * Keysyms with an obvious 1-character representation.  Only these characters
@@ -424,9 +444,24 @@ int xorg_window_managed (xcb_window_t window, xcb_window_t* managed_windows,
 
 
 /**
+ * Determine whether a window is in the blacklist.
+ */
+int xorg_window_blacklisted (xcw_state_t* state, xcb_window_t window) {
+    int found = 0;
+    for (int i = 0; i < state->input->blacklist_size; i++) {
+        if (state->input->blacklist[i] == window) {
+            found = 1;
+            break;
+        }
+    }
+    return found;
+}
+
+
+/**
  * Initialise the connection to the X server.
  *
- * state (output): pointer to program state; `ksl` and `wsetups` are not
+ * state (output): pointer to program state; `input` and `wsetups` are not
  *     initialised
  */
 void initialise_xorg (xcw_state_t** state) {
@@ -456,7 +491,7 @@ void initialise_xorg (xcw_state_t** state) {
 
     *state = malloc(sizeof(xcw_state_t));
     xcw_state_t local_state = {
-        xcon, xroot, ewmh, ksymbols, overlay_font, NULL, 0, NULL, 0
+        xcon, xroot, ewmh, ksymbols, overlay_font, NULL, NULL, 0
     };
     **state = local_state;
 }
@@ -505,36 +540,120 @@ keysyms_lookup_t* keysyms_lookup_find_keysym (
 
 
 /**
- * Parse command-line arguments.
+ * Parse the `CHARACTERS` argument.  May call `argp_error`.
  *
- * argc, argv: as passed to `main`
- * ksl (output): keysym lookup containing allowed characters
- * ksl_size (output): size of `ksl`
+ * char_pool: value passed for the argument
+ * input: result is placed in here
  */
-void parse_args (int argc, char** argv, keysyms_lookup_t** ksl, int* ksl_size) {
-    if (argc != 2) xcw_die("expected exactly one argument\n");
-
-    // character pool argument: check validity of characters, compile lookup
-    char* char_pool = argv[1];
+void parse_arg_characters (char* char_pool, struct argp_state* state,
+                           xcw_input_t* input) {
     // we won't put more than `char_pool` items in `ksl`
-    *ksl = calloc(strlen(char_pool), sizeof(keysyms_lookup_t));
+    input->ksl = calloc(strlen(char_pool), sizeof(keysyms_lookup_t));
     int size = 0;
 
+    // check validity of characters, compile lookup
     for (int i = 0; i < strlen(char_pool); i++) {
         char c = char_pool[i];
         keysyms_lookup_t* ksl_item = keysyms_lookup_find_char(
             ALL_KEYSYMS_LOOKUP, ALL_KEYSYMS_LOOKUP_SIZE, c);
-        if (ksl_item == NULL) xcw_die("unknown character: %c\n", c);
+        if (ksl_item == NULL) {
+            argp_error(state, "CHARACTERS argument: unknown character: %c", c);
+        }
         // don't allow duplicates in lookup
-        if (keysyms_lookup_find_char(*ksl, size, c) == NULL) {
-            (*ksl)[size] = *ksl_item;
+        if (keysyms_lookup_find_char(input->ksl, size, c) == NULL) {
+            input->ksl[size] = *ksl_item;
             size += 1;
         }
     }
 
-    if (size < 2) xcw_die("expected at least two characters\n");
-    *ksl = realloc(*ksl, sizeof(keysyms_lookup_t) * size);
-    *ksl_size = size;
+    if (size < 2) {
+        argp_error(state,
+                   "CHARACTERS argument: expected at least two characters");
+    }
+    input->ksl = realloc(input->ksl, sizeof(keysyms_lookup_t) * size);
+    input->ksl_size = size;
+}
+
+
+/**
+ * Parse the `--blacklist` option.  May call `argp_error`.
+ *
+ * window_id: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_blacklist (char* window_id, struct argp_state* state,
+                          xcw_input_t* input) {
+    errno = 0;
+    long int window = strtol(window_id, NULL, 0);
+    // Xorg window IDs are 32-bit unsigned
+    if (errno != 0 || window <= 0 || window > 0xffffffff) {
+        argp_error(state, "invalid value for window ID: %s", window_id);
+    }
+
+    input->blacklist = realloc(
+        input->blacklist, sizeof(xcb_window_t) * (input->blacklist_size + 1));
+    input->blacklist[input->blacklist_size] = window;
+    input->blacklist_size += 1;
+}
+
+
+/**
+ * Argument parsing function for use with `argp`.
+ *
+ * state: `input` is `xcw_input_t*`, which points to an allocated instance that
+ *     gets populated by calls to this function.  `blacklist` should be already
+ *     allocated (with size 0).
+ */
+error_t parse_arg (int key, char* value, struct argp_state* state) {
+    xcw_input_t* input = (xcw_input_t*)(state->input);
+
+    if (key == 'b') {
+        parse_arg_blacklist(value, state, input);
+        return 0;
+    } else if (key == ARGP_KEY_ARG) {
+        if (state->arg_num == 0) {
+            parse_arg_characters(value, state, input);
+            return 0;
+        } else {
+            return ARGP_ERR_UNKNOWN;
+        }
+    } else {
+        return ARGP_ERR_UNKNOWN;
+    }
+}
+
+
+/**
+ * Parse command-line arguments.
+ *
+ * argc, argv: as passed to `main`
+ */
+xcw_input_t* parse_args (int argc, char** argv) {
+    struct argp_option options[] = {
+        { "blacklist", 'b', "WINDOWID", 0,
+            "IDs of windows to ignore (specify this option multiple times)." },
+        { 0 }
+    };
+
+    struct argp parser = {
+        options, parse_arg, "[-b WINDOWID [-b ...]] CHARACTERS",
+        "\n\
+Running the program draws a string of characters over each visible window.  \
+Typing one of those strings causes the program to print the corresponding \
+window ID to standard output and exit.  If any non-matching keys are pressed, \
+the program exits without printing anything.\n\
+\n\
+CHARACTERS defines the characters available for use in the displayed strings; \
+eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.",
+        NULL, NULL, NULL
+    };
+
+    xcw_input_t input = { NULL, 0, malloc(0), 0 };
+    xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
+    *inputp = input;
+    argp_parse(&parser, argc, argv, 0, NULL, inputp);
+    if (inputp->ksl == NULL) xcw_die("missing CHARACTERS argument\n");
+    return inputp;
 }
 
 
@@ -747,7 +866,7 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
 
             window_setup_t wsetup = {
                 overlay_window, NULL, NULL, rectp, window,
-                state->ksl[i].character, NULL, 0
+                state->input->ksl[i].character, NULL, 0
             };
             (*wsetups)[i] = wsetup;
         }
@@ -755,7 +874,7 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
 
     } else {
         // number of windows 'used up' per iteration
-        int p = (int)(pow(state->ksl_size, remain_depth));
+        int p = (int)(pow(state->input->ksl_size, remain_depth));
         // required number of iterations to use all windows
         int n = (int)(ceil((float)windows_size / (float)p));
         *wsetups = calloc(n, sizeof(window_setup_t));
@@ -769,7 +888,7 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
                 windows + (i * p), min(windows_size - (i * p), p),
                 &children, &children_size);
             window_setup_t wsetup = {
-                NULL, NULL, NULL, NULL, NULL, state->ksl[i].character,
+                NULL, NULL, NULL, NULL, NULL, state->input->ksl[i].character,
                 children, children_size
             };
             (*wsetups)[i] = wsetup;
@@ -790,7 +909,7 @@ void initialise_window_tracking (xcw_state_t* state,
     _initialise_window_tracking(
         state,
         // the length of each tracking string
-        (int)(log(max(windows_size - 1, 1)) / log(state->ksl_size)),
+        (int)(log(max(windows_size - 1, 1)) / log(state->input->ksl_size)),
         windows, windows_size, &(state->wsetups), &(state->wsetups_size));
 }
 
@@ -937,6 +1056,9 @@ void initialise_tracked_windows (xcw_state_t* state,
                 all_windows[i], managed_windows, managed_windows_size
             )) &&
 
+            // ignore if blacklisted
+            !xorg_window_blacklisted(state, all_windows[i]) &&
+
             xorg_window_normal(state->xcon, all_windows[i]) &&
 
             ewmh_window_normal(state, all_windows[i])
@@ -960,7 +1082,8 @@ void initialise_tracked_windows (xcw_state_t* state,
 void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
     xcb_keysym_t ksym = xcb_key_press_lookup_keysym(state->ksymbols, kp, 0);
     keysyms_lookup_t* ksl_item = (
-        keysyms_lookup_find_keysym(state->ksl, state->ksl_size, ksym));
+        keysyms_lookup_find_keysym(state->input->ksl,
+                                   state->input->ksl_size, ksym));
 
     if (ksl_item == NULL) {
         xcw_exit_no_match();
@@ -971,13 +1094,10 @@ void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
 
 
 int main (int argc, char** argv) {
-    keysyms_lookup_t* ksl;
-    int ksl_size;
-    parse_args(argc, argv, &ksl, &ksl_size);
+    xcw_input_t* input = parse_args(argc, argv);
     xcw_state_t* state;
     initialise_xorg(&state);
-    state->ksl = ksl;
-    state-> ksl_size = ksl_size;
+    state->input = input;
     initialise_input(state);
 
     xcb_window_t* windows;

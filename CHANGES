@@ -1,3 +1,7 @@
+0.1.2-next:
+ * optional blacklisting of windows by ID
+ * standard command-line options and help text
+
 0.1.2:
  * fix bug: filters out the wrong windows (those specifying _NET_WM_WINDOW_TYPE
    normal)
