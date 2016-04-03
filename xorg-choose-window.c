@@ -22,6 +22,7 @@ specific language governing permissions and limitations under the License.
 #include <string.h>
 #include <math.h>
 #include <errno.h>
+#include <sysexits.h>
 #include <argp.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
@@ -30,7 +31,6 @@ specific language governing permissions and limitations under the License.
 
 
 // TODO (fixes)
-// sort out error handling (exit codes (sysexits.h), man xcb-requests), memory management, exit cleanup
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
 
@@ -40,6 +40,8 @@ specific language governing permissions and limitations under the License.
 // configurable font/text size/colours
 // only show/require characters that need to be pressed (eg. aa, ao, o)
 // manpage
+//  - mention in readme
+//  - move exit status info from --help
 // take window IDs as whitelist (like blacklist)
 // options for output format (hex)
 
@@ -216,16 +218,32 @@ int max (int a, int b) {
 
 
 /**
- * Print an error message to stderr and exit the process with a failure status.
- * Takes arguments like `*printf`.
+ * Print an error message to stderr and exit the process with a the given
+ * status.
+ *
+ * code: exit code
+ * fmt, ...: arguments as taken by `*printf`
  */
-void xcw_die (char *fmt, ...) {
+void xcw_fail (int code, char *fmt, ...) {
     va_list args;
     fprintf(stderr, "error: ");
     va_start(args, fmt);
     vfprintf(stderr, fmt, args);
     va_end(args);
-    exit(1);
+    exit(code);
+}
+
+
+/**
+ * Print an error message to stderr and exit the process with a failure status.
+ *
+ * fmt, ...: arguments as taken by `*printf`
+ */
+void xcw_die (char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    xcw_fail(EX_SOFTWARE, fmt, args);
+    va_end(args);
 }
 
 
@@ -277,7 +295,7 @@ void choose_window (xcb_window_t window) {
 void xorg_check_request (xcb_connection_t* xcon,
                          xcb_void_cookie_t cookie, char *msg) {
     xcb_generic_error_t *error = xcb_request_check(xcon, cookie);
-    if (error) xcw_die("xcb error: %s (%d)\n", msg, error->error_code);
+    if (error) xcw_die("%s (%d)\n", msg, error->error_code);
 }
 
 
@@ -644,7 +662,10 @@ window ID to standard output and exit.  If any non-matching keys are pressed, \
 the program exits without printing anything.\n\
 \n\
 CHARACTERS defines the characters available for use in the displayed strings; \
-eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.",
+eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.\n\
+\n\
+The program exits with status 0 on success, 64 on invalid arguments, and 70 if \
+an unexpected error occurs.",
         NULL, NULL, NULL
     };
 
@@ -652,7 +673,9 @@ eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.",
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
     argp_parse(&parser, argc, argv, 0, NULL, inputp);
-    if (inputp->ksl == NULL) xcw_die("missing CHARACTERS argument\n");
+    if (inputp->ksl == NULL) {
+        xcw_fail(EX_USAGE, "missing CHARACTERS argument\n");
+    }
     return inputp;
 }
 
@@ -688,7 +711,7 @@ void initialise_input (xcw_state_t* state) {
     }
 
     if (status == XCB_GRAB_STATUS_ALREADY_GRABBED) {
-        xcw_die("grab_keyboard: %d\n", status);
+        xcw_die("grab_keyboard: already grabbed\n");
     }
 }
 
