@@ -31,7 +31,6 @@ specific language governing permissions and limitations under the License.
 
 
 // TODO (fixes)
-// check malloc(0) - could return NULL
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
 
@@ -609,11 +608,12 @@ keysyms_lookup_t* keysyms_lookup_find_keysym (
 void parse_arg_characters (char* char_pool, struct argp_state* state,
                            xcw_input_t* input) {
     // we won't put more than `char_pool` items in `ksl`
-    input->ksl = calloc(strlen(char_pool), sizeof(keysyms_lookup_t));
+    int pool_size = strlen(char_pool);
+    input->ksl = calloc(pool_size, sizeof(keysyms_lookup_t));
     int size = 0;
 
     // check validity of characters, compile lookup
-    for (int i = 0; i < strlen(char_pool); i++) {
+    for (int i = 0; i < pool_size; i++) {
         char c = char_pool[i];
         keysyms_lookup_t* ksl_item = keysyms_lookup_find_char(
             ALL_KEYSYMS_LOOKUP, ALL_KEYSYMS_LOOKUP_SIZE, c);
@@ -662,8 +662,7 @@ void parse_arg_blacklist (char* window_id, struct argp_state* state,
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
- *     gets populated by calls to this function.  `blacklist` should be already
- *     allocated (with size 0).
+ *     gets populated by calls to this function
  */
 error_t parse_arg (int key, char* value, struct argp_state* state) {
     xcw_input_t* input = (xcw_input_t*)(state->input);
@@ -712,7 +711,7 @@ an unexpected error occurs.",
         NULL, NULL, NULL
     };
 
-    xcw_input_t input = { NULL, 0, malloc(0), 0 };
+    xcw_input_t input = { NULL, 0, NULL, 0 };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
     argp_parse(&parser, argc, argv, 0, NULL, inputp);
