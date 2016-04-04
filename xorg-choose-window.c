@@ -31,12 +31,12 @@ specific language governing permissions and limitations under the License.
 
 
 // TODO (fixes)
+// check malloc(0) - could return NULL
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
 
 // TODO (improvements)
 // larger default font
-// centre text on windows
 // configurable font/text size/colours
 // only show/require characters that need to be pressed (eg. aa, ao, o)
 // manpage
@@ -66,7 +66,7 @@ typedef struct keysyms_lookup_t {
  *
  * ?overlay_window: the window we created over the top of the tracked window
  * ?overlay_font_gc: for drawing the text on `overlay_window`
- * ?overlay_fbg_gc: for drawing the background on `overlay_window`
+ * ?overlay_bg_gc: for drawing the background on `overlay_window`
  * ?overlay_rect: the on-screen area covered by `overlay_window`
  * ?window: the pre-existing tracked window
  * character: the character that must be typed to select `window`, or to descend
@@ -337,6 +337,49 @@ int xorg_window_has_property (xcb_connection_t* xcon,
 
     free(lpr);
     return result;
+}
+
+
+/**
+ * Construct a 2-byte character string from a 1-byte character string.
+ */
+xcb_char2b_t* xorg_str_to_2b (char* text, int text_size) {
+    xcb_char2b_t* text2b = malloc(text_size * sizeof(xcb_char2b_t));
+    xcb_char2b_t c = { 0, 0 };
+    for (int i = 0; i < text_size; i++) {
+        c.byte2 = text[i];
+        text2b[i] = c;
+    }
+    return text2b;
+}
+
+
+/**
+ * Render text centred on a window.
+ *
+ * win_rect: rectangle covering window with ID `win`
+ * gc: graphics context for rendering the text
+ * text: text to render
+ */
+void xorg_draw_text_centred (
+    xcb_connection_t* xcon, xcb_window_t win, xcb_rectangle_t* win_rect,
+    xcb_gcontext_t gc, char* text
+) {
+    int size = min(strlen(text), 255);
+
+    // check expected rendered size
+    xcb_char2b_t* text_2b = xorg_str_to_2b(text, size);
+    xcb_query_text_extents_cookie_t qtec = (
+        xcb_query_text_extents(xcon, gc, size, text_2b));
+    free(text_2b);
+    xcb_query_text_extents_reply_t* qter;
+    if (!(qter = xcb_query_text_extents_reply(xcon, qtec, NULL))) {
+        xcw_die("query_text_extents\n");
+    }
+
+    int x = (win_rect->width - qter->overall_width) / 2;
+    int y = (win_rect->height - qter->font_ascent - qter->font_descent) / 2;
+    xcb_image_text_8(xcon, size, win, gc, x, y + qter->font_ascent, text);
 }
 
 
@@ -751,7 +794,7 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
  *
  * win: the overlay window
  */
-xcb_gc_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
+xcb_gcontext_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(xcon);
     uint32_t mask = XCB_GC_FOREGROUND;
@@ -768,7 +811,7 @@ xcb_gc_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
  *
  * win: the overlay window
  */
-xcb_gc_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
+xcb_gcontext_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND | XCB_GC_FONT;
@@ -802,8 +845,8 @@ void overlay_set_text (xcw_state_t* state,
 
     xcb_poly_fill_rectangle(state->xcon, win, *(wsetup->overlay_bg_gc), 1,
                             wsetup->overlay_rect);
-    xcb_image_text_8(state->xcon, min(strlen(text), 255), win,
-                     *(wsetup->overlay_font_gc), 30, 20, text);
+    xorg_draw_text_centred(state->xcon, win, wsetup->overlay_rect,
+                           *(wsetup->overlay_font_gc), text);
 }
 
 
