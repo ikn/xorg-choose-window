@@ -402,7 +402,7 @@ int xorg_window_normal (xcb_connection_t* xcon, xcb_window_t window) {
 
 
 /**
- * Determine whether a window is 'normal' according EWMH.
+ * Determine whether a window is a persistent application window according EWMH.
  */
 int ewmh_window_normal (xcw_state_t* state, xcb_window_t window) {
     xcb_get_property_cookie_t gpc = (
@@ -419,7 +419,13 @@ int ewmh_window_normal (xcw_state_t* state, xcb_window_t window) {
     // if reply length is 0, window type isn't defined, so treat it as normal
     return (
         prop_len == 0 ||
-        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_NORMAL);
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_TOOLBAR ||
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_MENU ||
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_UTILITY ||
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_SPLASH ||
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_DIALOG ||
+        window_type[0] == state->ewmh._NET_WM_WINDOW_TYPE_NORMAL
+    );
 }
 
 

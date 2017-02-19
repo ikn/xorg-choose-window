@@ -2,6 +2,7 @@
  * optional blacklisting of windows by ID
  * standard command-line options and help text
  * draw text centred on windows
+ * works for more types of windows
  * changed and documented exit codes
 
 0.1.2:
