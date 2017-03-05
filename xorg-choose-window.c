@@ -37,7 +37,9 @@ specific language governing permissions and limitations under the License.
 // TODO (improvements)
 // larger default font
 // configurable font/text size/colours
-// only show/require characters that need to be pressed (eg. aa, ao, o)
+// allocate better to require fewer characters
+//  - breadth before depth
+//  - p, n becomes base_num_each_slot, num_extra
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
@@ -904,6 +906,38 @@ void overlays_set_text (xcw_state_t* state) {
 
 
 /**
+ * Create a bottom-level `wsetup_t`.
+ *
+ * window: the window to track
+ * character: bottom-level character in the window label
+ */
+window_setup_t initialise_window_setup (xcw_state_t* state, xcb_window_t window,
+                                        char character) {
+    // an xcb_window_t is an xcb_drawable_t
+    xcb_get_geometry_cookie_t ggc = xcb_get_geometry(state->xcon, window);
+    xcb_get_geometry_reply_t* ggr;
+    if (!(ggr = xcb_get_geometry_reply(state->xcon, ggc, NULL))) {
+        xcw_die("get_geometry\n");
+    }
+
+    xcb_rectangle_t rect = { 0, 0, ggr->width, ggr->height };
+    xcb_rectangle_t* rectp = malloc(sizeof(xcb_rectangle_t));
+    *rectp = rect;
+    // guaranteed that ksl_size <= windows_size
+    xcb_window_t* overlay_window = overlay_create(
+        state, ggr->border_width + ggr->x, ggr->border_width + ggr->y,
+        rect.width, rect.height);
+    xcb_window_t* window_p = malloc(sizeof(xcb_window_t));
+    *window_p = window;
+
+    window_setup_t wsetup = {
+        overlay_window, NULL, NULL, rectp, window_p, character, NULL, 0
+    };
+    return wsetup;
+}
+
+
+/**
  * See `initialise_window_tracking`.
  *
  * remain_depth: number of nested levels remaining (we choose a character in the
@@ -915,33 +949,11 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
     if (remain_depth == 0) {
         *wsetups = calloc(windows_size, sizeof(window_setup_t));
         *wsetups_size = windows_size;
-        xcb_get_geometry_cookie_t ggc;
-        xcb_get_geometry_reply_t* ggr;
-
         for (int i = 0; i < windows_size; i++) {
-            // an xcb_window_t is an xcb_drawable_t
-            ggc = xcb_get_geometry(state->xcon, windows[i]);
-            if (!(ggr = xcb_get_geometry_reply(state->xcon, ggc, NULL))) {
-                xcw_die("get_geometry\n");
-            }
-
-            xcb_rectangle_t rect = { 0, 0, ggr->width, ggr->height };
-            xcb_rectangle_t* rectp = malloc(sizeof(xcb_rectangle_t));
-            *rectp = rect;
             // guaranteed that ksl_size <= windows_size
-            xcb_window_t* overlay_window = overlay_create(
-                state, ggr->border_width + ggr->x, ggr->border_width + ggr->y,
-                rect.width, rect.height);
-            xcb_window_t* window = malloc(sizeof(xcb_window_t));
-            *window = windows[i];
-
-            window_setup_t wsetup = {
-                overlay_window, NULL, NULL, rectp, window,
-                state->input->ksl[i].character, NULL, 0
-            };
-            (*wsetups)[i] = wsetup;
+            (*wsetups)[i] = initialise_window_setup(
+                state, windows[i], state->input->ksl[i].character);
         }
-
 
     } else {
         // number of windows 'used up' per iteration
@@ -954,15 +966,23 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
         for (int i = 0; i < n; i++) {
             window_setup_t* children = NULL;
             int children_size;
-            _initialise_window_tracking(
-                state, remain_depth - 1,
-                windows + (i * p), min(windows_size - (i * p), p),
-                &children, &children_size);
-            window_setup_t wsetup = {
-                NULL, NULL, NULL, NULL, NULL, state->input->ksl[i].character,
-                children, children_size
-            };
-            (*wsetups)[i] = wsetup;
+            int children_windows_size = min(windows_size - (i * p), p);
+
+            if (children_windows_size == 1) {
+                (*wsetups)[i] = initialise_window_setup(
+                    state, *(windows + (i * p)),
+                    state->input->ksl[i].character);
+            } else {
+                _initialise_window_tracking(
+                    state, remain_depth - 1,
+                    windows + (i * p), children_windows_size,
+                    &children, &children_size);
+                window_setup_t wsetup = {
+                    NULL, NULL, NULL, NULL, NULL,
+                    state->input->ksl[i].character, children, children_size
+                };
+                (*wsetups)[i] = wsetup;
+            }
         }
     }
 }
@@ -1018,26 +1038,25 @@ void wsetup_debug_print (window_setup_t* wsetup) {
  * used memory.
  */
 void wsetup_free (xcb_connection_t* xcon, window_setup_t* wsetup) {
+    xcb_window_t* w = wsetup->overlay_window;
+    if (w != NULL) {
+        xcb_destroy_window_checked(xcon, *w);
+        free(wsetup->overlay_rect);
+    }
+    if (wsetup->overlay_bg_gc != NULL) {
+        xcb_free_gc(xcon, *(wsetup->overlay_bg_gc));
+        free(wsetup->overlay_bg_gc);
+    }
+    if (wsetup->overlay_font_gc != NULL) {
+        xcb_free_gc(xcon, *(wsetup->overlay_font_gc));
+        free(wsetup->overlay_font_gc);
+    }
+
     if (wsetup->children != NULL) {
         for (int i = 0; i < wsetup->children_size; i++) {
             window_setup_t* child = &(wsetup->children[i]);
-            xcb_window_t* w = child->overlay_window;
-            if (w != NULL) {
-                xcb_destroy_window_checked(xcon, *w);
-                free(child->overlay_rect);
-            }
             wsetup_free(xcon, child);
-
-            if (wsetup->overlay_bg_gc != NULL) {
-                xcb_free_gc(xcon, *(wsetup->overlay_bg_gc));
-                free(wsetup->overlay_bg_gc);
-            }
-            if (wsetup->overlay_font_gc != NULL) {
-                xcb_free_gc(xcon, *(wsetup->overlay_font_gc));
-                free(wsetup->overlay_font_gc);
-            }
         }
-
         free(wsetup->children);
     }
 
@@ -1048,7 +1067,7 @@ void wsetup_free (xcb_connection_t* xcon, window_setup_t* wsetup) {
 /**
  * Choose the window in a setup structure or replace the current array of setup
  * structures with its children.  Updates text rendered on overlay windows.
- * Exits the process if choose a window.
+ * Exits the process if a window is chosen.
  */
 void wsetup_choose (xcw_state_t* state, window_setup_t* wsetup) {
     if (wsetup->window != NULL && wsetup->children_size == 0) {
@@ -1080,8 +1099,8 @@ void wsetups_descend_by_index (xcw_state_t* state, int index) {
 
 /**
  * Reduce a setup structure by choosing a character, then reduce recursively
- * like `wsetup_descend`.  Exits the process if the character doesn't correspond
- * to any options.  Frees removed parts of the structure.
+ * like `wsetups_descend_by_index`.  Exits the process if the character doesn't
+ * correspond to any options.  Frees removed parts of the structure.
  *
  * c: character to choose
  */
