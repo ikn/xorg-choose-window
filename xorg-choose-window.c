@@ -37,9 +37,6 @@ specific language governing permissions and limitations under the License.
 // TODO (improvements)
 // larger default font
 // configurable font/text size/colours
-// allocate better to require fewer characters
-//  - breadth before depth
-//  - p, n becomes base_num_each_slot, num_extra
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
@@ -956,26 +953,29 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
         }
 
     } else {
-        // number of windows 'used up' per iteration
-        int p = (int)(pow(state->input->ksl_size, remain_depth));
+        // base number of windows 'used up' per iteration
+        int p = windows_size / state->input->ksl_size;
+        // number of iterations to use one extra window
+        int r = windows_size % state->input->ksl_size;
         // required number of iterations to use all windows
-        int n = (int)(ceil((float)windows_size / (float)p));
+        int n = p > 0 ? state->input->ksl_size : r;
         *wsetups = calloc(n, sizeof(window_setup_t));
         *wsetups_size = n;
+        xcb_window_t* remain_windows = windows;
 
         for (int i = 0; i < n; i++) {
             window_setup_t* children = NULL;
             int children_size;
-            int children_windows_size = min(windows_size - (i * p), p);
+            int children_windows_size = i < r ? p + 1 : p;
 
             if (children_windows_size == 1) {
                 (*wsetups)[i] = initialise_window_setup(
-                    state, *(windows + (i * p)),
+                    state, *remain_windows,
                     state->input->ksl[i].character);
             } else {
                 _initialise_window_tracking(
                     state, remain_depth - 1,
-                    windows + (i * p), children_windows_size,
+                    remain_windows, children_windows_size,
                     &children, &children_size);
                 window_setup_t wsetup = {
                     NULL, NULL, NULL, NULL, NULL,
@@ -983,6 +983,8 @@ void _initialise_window_tracking (xcw_state_t* state, int remain_depth,
                 };
                 (*wsetups)[i] = wsetup;
             }
+
+            remain_windows += children_windows_size;
         }
     }
 }
