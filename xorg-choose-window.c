@@ -41,7 +41,6 @@ specific language governing permissions and limitations under the License.
 //  - mention in readme
 //  - move exit status info from --help
 // take window IDs as whitelist (like blacklist)
-// options for output format (hex)
 
 
 // -- types
@@ -83,18 +82,19 @@ typedef struct window_setup_t {
     int children_size;
 } window_setup_t;
 
-
 /**
  * Data generated from initial user input to the program.
  *
  * ksl: keys available for use
  * blacklist: windows which should be ignored
+ * format: FORMAT_DEC or FORMAT_HEX
  */
 typedef struct xcw_input_t {
     keysyms_lookup_t* ksl;
     int ksl_size;
     xcb_window_t* blacklist;
     int blacklist_size;
+    short format;
 } xcw_input_t;
 
 
@@ -147,6 +147,11 @@ int MAX_WINDOWS = 1024;
  * Printed version string (used internally by `argp`).
  */
 const char* argp_program_version = "xorg-choose-window 0.1.2";
+/*
+ * Output format options.
+ */
+short FORMAT_DEC = 0;
+short FORMAT_HEX = 1;
 
 /**
  * Keysyms with an obvious 1-character representation.  Only these characters
@@ -276,8 +281,9 @@ void xcw_exit_no_match () {
 /**
  * Print the chosen window to stdout and exit the process.
  */
-void choose_window (xcb_window_t window) {
-    printf("%d\n", window);
+void choose_window (xcw_input_t* input, xcb_window_t window) {
+    if (input->format == FORMAT_DEC) printf("%d\n", window);
+    else if (input->format == FORMAT_HEX) printf("0x%x\n", window);
     xcw_exit_match();
 }
 
@@ -664,6 +670,24 @@ void parse_arg_blacklist (char* window_id, struct argp_state* state,
 
 
 /**
+ * Parse the `--format` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_format (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    if (strcmp(format, "decimal") == 0) {
+        input->format = FORMAT_DEC;
+    } else if (strcmp(format, "hexadecimal") == 0) {
+        input->format = FORMAT_HEX;
+    } else {
+        argp_error(state, "invalid value for output format: %s", format);
+    }
+}
+
+
+/**
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
@@ -674,6 +698,9 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
 
     if (key == 'b') {
         parse_arg_blacklist(value, state, input);
+        return 0;
+    } else if (key == 'f') {
+        parse_arg_format(value, state, input);
         return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
@@ -696,7 +723,9 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
 xcw_input_t* parse_args (int argc, char** argv) {
     struct argp_option options[] = {
         { "blacklist", 'b', "WINDOWID", 0,
-            "IDs of windows to ignore (specify this option multiple times)." },
+            "IDs of windows to ignore (specify this option multiple times)" },
+        { "format", 'f', "FORMAT", 0,
+            "Output format: 'decimal' or 'hexadecimal'" },
         { 0 }
     };
 
@@ -1073,7 +1102,7 @@ void wsetup_free (xcb_connection_t* xcon, window_setup_t* wsetup) {
  */
 void wsetup_choose (xcw_state_t* state, window_setup_t* wsetup) {
     if (wsetup->window != NULL && wsetup->children_size == 0) {
-        choose_window(*(wsetup->window));
+        choose_window(state->input, *(wsetup->window));
     } else {
         state->wsetups = wsetup->children;
         state->wsetups_size = wsetup->children_size;

@@ -1,5 +1,6 @@
 0.1.2-next:
  * optional blacklisting of windows by ID
+ * choice of format for the printed window ID
  * standard command-line options and help text
  * draw text centred on windows
  * works for more types of windows
