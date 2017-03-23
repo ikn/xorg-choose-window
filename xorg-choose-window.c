@@ -40,7 +40,6 @@ specific language governing permissions and limitations under the License.
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
-// take window IDs as whitelist (like blacklist)
 
 
 // -- types
@@ -87,6 +86,7 @@ typedef struct window_setup_t {
  *
  * ksl: keys available for use
  * blacklist: windows which should be ignored
+ * whitelist: windows which should be included
  * format: FORMAT_DEC or FORMAT_HEX
  */
 typedef struct xcw_input_t {
@@ -94,6 +94,8 @@ typedef struct xcw_input_t {
     int ksl_size;
     xcb_window_t* blacklist;
     int blacklist_size;
+    xcb_window_t* whitelist;
+    int whitelist_size;
     short format;
 } xcw_input_t;
 
@@ -515,12 +517,13 @@ int xorg_window_managed (xcb_window_t window, xcb_window_t* managed_windows,
 
 
 /**
- * Determine whether a window is in the blacklist.
+ * Determine whether a window is in the list of windows.
  */
-int xorg_window_blacklisted (xcw_state_t* state, xcb_window_t window) {
+int xorg_contains_window (xcb_window_t* windows, int windows_size,
+                          xcb_window_t window) {
     int found = 0;
-    for (int i = 0; i < state->input->blacklist_size; i++) {
-        if (state->input->blacklist[i] == window) {
+    for (int i = 0; i < windows_size; i++) {
+        if (windows[i] == window) {
             found = 1;
             break;
         }
@@ -648,13 +651,13 @@ void parse_arg_characters (char* char_pool, struct argp_state* state,
 
 
 /**
- * Parse the `--blacklist` option.  May call `argp_error`.
+ * Parse the `--blacklist` or `--whitelist` option.  May call `argp_error`.
  *
  * window_id: value passed to the option
- * input: result is placed in here
+ * windows: result is added to this list, and its size updated
  */
-void parse_arg_blacklist (char* window_id, struct argp_state* state,
-                          xcw_input_t* input) {
+void parse_arg_window_list (char* window_id, struct argp_state* state,
+                            xcb_window_t** windows, int* windows_size) {
     errno = 0;
     long int window = strtol(window_id, NULL, 0);
     // Xorg window IDs are 32-bit unsigned
@@ -662,10 +665,9 @@ void parse_arg_blacklist (char* window_id, struct argp_state* state,
         argp_error(state, "invalid value for window ID: %s", window_id);
     }
 
-    input->blacklist = realloc(
-        input->blacklist, sizeof(xcb_window_t) * (input->blacklist_size + 1));
-    input->blacklist[input->blacklist_size] = window;
-    input->blacklist_size += 1;
+    *windows = realloc(*windows, sizeof(xcb_window_t) * (*windows_size + 1));
+    (*windows)[*windows_size] = window;
+    *windows_size += 1;
 }
 
 
@@ -697,7 +699,12 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
     xcw_input_t* input = (xcw_input_t*)(state->input);
 
     if (key == 'b') {
-        parse_arg_blacklist(value, state, input);
+        parse_arg_window_list(value, state, &(input->blacklist),
+                              &(input->blacklist_size));
+        return 0;
+    } else if (key == 'w') {
+        parse_arg_window_list(value, state, &(input->whitelist),
+                              &(input->whitelist_size));
         return 0;
     } else if (key == 'f') {
         parse_arg_format(value, state, input);
@@ -724,6 +731,9 @@ xcw_input_t* parse_args (int argc, char** argv) {
     struct argp_option options[] = {
         { "blacklist", 'b', "WINDOWID", 0,
             "IDs of windows to ignore (specify this option multiple times)" },
+        { "whitelist", 'w', "WINDOWID", 0,
+            "IDs of windows to include (include all if none specified) \
+(specify this option multiple times)" },
         { "format", 'f', "FORMAT", 0,
             "Output format: 'decimal' or 'hexadecimal'" },
         { 0 }
@@ -1177,8 +1187,17 @@ void initialise_tracked_windows (xcw_state_t* state,
                 all_windows[i], managed_windows, managed_windows_size
             )) &&
 
+            // only include if whitelisted
+            (state->input->whitelist_size == 0 || xorg_contains_window(
+                state->input->whitelist, state->input->whitelist_size,
+                all_windows[i]
+            )) &&
+
             // ignore if blacklisted
-            !xorg_window_blacklisted(state, all_windows[i]) &&
+            !xorg_contains_window(
+                state->input->blacklist, state->input->blacklist_size,
+                all_windows[i]
+            ) &&
 
             xorg_window_normal(state->xcon, all_windows[i]) &&
 
