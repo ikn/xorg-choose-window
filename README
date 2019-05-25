@@ -12,6 +12,13 @@ Licensed under the Apache License, version 2.0; if this was not included, you
 can find it here:
     http://www.apache.org/licenses/LICENSE-2.0.txt
 
+    DEPENDENCIES
+
+XCB, xcb-util-keysyms, xcb-util-wm: http://xcb.freedesktop.org/
+argp:
+ * part of glibc: https://www.gnu.org/software/libc/
+ * argp-standalone: http://www.freebsdsoftware.org/devel/argp-standalone.html
+
     INSTALLATION
 
 On Unix-like systems, with Make and a C compiler, run `make' then
@@ -22,13 +29,6 @@ It should be necessary to run `make install' as root (DESTDIR is supported).
 The following files are installed to the following default locations:
 
 xorg-choose-window -> /usr/local/bin/xorg-choose-window
-
-    DEPENDENCIES
-
-XCB, xcb-util-keysyms, xcb-util-wm: http://xcb.freedesktop.org/
-argp:
- * part of glibc: https://www.gnu.org/software/libc/>
- * argp-standalone: http://www.freebsdsoftware.org/devel/argp-standalone.html
 
     USAGE
 

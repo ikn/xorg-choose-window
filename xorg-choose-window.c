@@ -223,8 +223,7 @@ int max (int a, int b) {
 
 
 /**
- * Print an error message to stderr and exit the process with a the given
- * status.
+ * Print an error message to stderr and exit the process with the given status.
  *
  * code: exit code
  * fmt, ...: arguments as taken by `*printf`
@@ -740,7 +739,7 @@ xcw_input_t* parse_args (int argc, char** argv) {
     };
 
     struct argp parser = {
-        options, parse_arg, "[-b WINDOWID [-b ...]] CHARACTERS",
+        options, parse_arg, "CHARACTERS",
         "\n\
 Running the program draws a string of characters over each visible window.  \
 Typing one of those strings causes the program to print the corresponding \
@@ -748,7 +747,8 @@ window ID to standard output and exit.  If any non-matching keys are pressed, \
 the program exits without printing anything.\n\
 \n\
 CHARACTERS defines the characters available for use in the displayed strings; \
-eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.\n\
+eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.  Allowed \
+characters are the numbers 0-9 and the letters a-z.\n\
 \n\
 The program exits with status 0 on success, 64 on invalid arguments, and 70 if \
 an unexpected error occurs.",
