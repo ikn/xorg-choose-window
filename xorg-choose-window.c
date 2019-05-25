@@ -148,7 +148,7 @@ int MAX_WINDOWS = 1024;
 /**
  * Printed version string (used internally by `argp`).
  */
-const char* argp_program_version = "xorg-choose-window 0.2.0";
+const char* argp_program_version = "xorg-choose-window 0.2.0-next";
 /*
  * Output format options.
  */
