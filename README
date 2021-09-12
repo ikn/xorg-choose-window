@@ -21,8 +21,12 @@ argp:
 
     INSTALLATION
 
-On Unix-like systems, with Make and a C compiler, run `make' then
-`make install'; to uninstall, run `make uninstall'.
+Build dependencies:
+ * Make
+ * a C compiler
+ * pkg-config
+
+Run `make' then `make install'; to uninstall, run `make uninstall'.
 
 It should be necessary to run `make install' as root (DESTDIR is supported).
 
