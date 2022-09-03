@@ -19,6 +19,7 @@ specific language governing permissions and limitations under the License.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <math.h>
 #include <errno.h>
@@ -83,6 +84,31 @@ typedef struct window_setup_t {
     int children_size;
 } window_setup_t;
 
+
+/**
+ * Overlay positioning rules
+ *
+ * x: horizontal offset
+ * y: vertical offset
+ * w: horizontal size
+ * h: vertical size
+ * *perc: true if the corresponding value should be considered as a
+ *     percentage of the tracked window
+ * anchor: where to base offset. Mask of LEFT RIGHT TOP BOTTOM CENTER
+ */
+typedef struct overlay_geometry_t {
+    int x;
+    int y;
+    int w;
+    int h;
+    bool x_perc;
+    bool y_perc;
+    bool w_perc;
+    bool h_perc;
+    int anchor;
+} overlay_geometry_t;
+
+
 /**
  * Data generated from initial user input to the program.
  *
@@ -103,6 +129,7 @@ typedef struct xcw_input_t {
     unsigned int bg_colour;
     unsigned int fg_colour;
     char* font_name;
+    overlay_geometry_t geometry_rules;
 } xcw_input_t;
 
 
@@ -143,6 +170,14 @@ char* OVERLAY_FONT_NAME = "fixed";
  * Default background colour for overlay windows.
  */
 int BG_COLOUR = 0xff333333;
+/**
+ * Possible values for anchor
+ */
+#define LEFT   1
+#define RIGHT  2
+#define TOP    4
+#define BOTTOM 8
+#define CENTER 16
 /**
  * Window class set on overlay windows.
  */
@@ -211,6 +246,17 @@ int ALL_KEYSYMS_LOOKUP_SIZE = (
 
 
 // -- utilities
+
+/**
+ * Convert string to uppercase in-place
+ */
+void upper (char* str) {
+    for (char* ch=str;*ch!='\0';ch++) {
+        if (*ch >= 'a' && *ch <= 'z')
+            *ch -= 32;
+    }
+}
+
 
 /**
  * Compute the smaller of two numbers.
@@ -765,6 +811,140 @@ void parse_arg_font (char* format, struct argp_state* state,
 
 
 /**
+ * Parse the `--position` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_position (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    int x, y;
+    bool x_perc = false;
+    bool y_perc = false;
+    char* remainder = NULL;
+
+    x = strtol(format, &remainder, 10);
+    if (format == remainder) {
+        argp_error(state, "invalid value for x offset: %s", format);
+        return;
+    }
+    if (*remainder == '%')
+    { x_perc = true; remainder++; }
+
+    if (*remainder != 'x' && *remainder != 'X') {
+        argp_error(state, "invalid value for position: %s", format);
+        return;
+    }
+    else { remainder++; }
+
+    format = remainder;
+    y = strtol(format, &remainder, 10);
+    if (format == remainder) {
+        argp_error(state, "invalid value for y offset: %s", remainder);
+        return;
+    }
+    if (*remainder == '%')
+    { y_perc = true; remainder++; }
+
+    input->geometry_rules.x = x;
+    input->geometry_rules.y = y;
+    input->geometry_rules.x_perc = x_perc;
+    input->geometry_rules.y_perc = y_perc;
+}
+
+
+/**
+ * Parse the `--size` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_size (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    int w, h;
+    bool w_perc = false;
+    bool h_perc = false;
+    char* remainder = NULL;
+
+    w = strtol(format, &remainder, 10);
+    if (format == remainder || w <= 0) {
+        argp_error(state, "invalid value for width: %s", format);
+        return;
+    }
+    if (*remainder == '%')
+    { w_perc = true; remainder++; }
+
+    if (*remainder != 'x' && *remainder != 'X') {
+        argp_error(state, "invalid value for size: %s", format);
+        return;
+    }
+    else { remainder++; }
+
+    format = remainder;
+    h = strtol(format, &remainder, 10);
+    if (format == remainder || h <= 0) {
+        argp_error(state, "invalid value for height: %s", remainder);
+        return;
+    }
+    if (*remainder == '%')
+    { h_perc = true; remainder++; }
+
+    input->geometry_rules.w = w;
+    input->geometry_rules.h = h;
+    input->geometry_rules.w_perc = w_perc;
+    input->geometry_rules.h_perc = h_perc;
+}
+
+
+/**
+ * Parse the `--anchor-h` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_anchor_h (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    upper(format);
+    if (strcmp(format, "LEFT") == 0) {
+        input->geometry_rules.anchor |= LEFT;
+    }
+    else if (strcmp(format, "RIGHT") == 0) {
+        input->geometry_rules.anchor |= RIGHT;
+    }
+    else if (strcmp(format, "CENTER") == 0) {
+        input->geometry_rules.anchor |= CENTER;
+    }
+    else{
+        argp_error(state, "invalid value for anchor-h: %s", format);
+    }
+}
+
+
+/**
+ * Parse the `--anchor-v` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_anchor_v (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    upper(format);
+    if (strcmp(format, "TOP") == 0) {
+        input->geometry_rules.anchor |= TOP;
+    }
+    else if (strcmp(format, "BOTTOM") == 0) {
+        input->geometry_rules.anchor |= BOTTOM;
+    }
+    else if (strcmp(format, "CENTER") == 0) {
+        input->geometry_rules.anchor |= CENTER;
+    }
+    else{
+        argp_error(state, "invalid value for anchor-v: %s", format);
+    }
+}
+
+
+/**
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
@@ -792,6 +972,18 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
         return 0;
     } else if (key == 't') {
         parse_arg_font(value, state, input);
+        return 0;
+    } else if (key == 'p') {
+        parse_arg_position(value, state, input);
+        return 0;
+    } else if (key == 's') {
+        parse_arg_size(value, state, input);
+        return 0;
+    } else if (key == 'h') {
+        parse_arg_anchor_h(value, state, input);
+        return 0;
+    } else if (key == 'v') {
+        parse_arg_anchor_v(value, state, input);
         return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
@@ -821,12 +1013,25 @@ xcw_input_t* parse_args (int argc, char** argv) {
         { "format", 'f', "FORMAT", 0,
             "Output format: 'decimal' or 'hexadecimal'" },
         { "bg-colour", 1, "COLOUR", 0,
-            "Background colour specified as a hex string", 1 },
+            "Background colour specified as a hex string", 10 },
         { "fg-colour", 2, "COLOUR", 0,
-            "Forground colour specified as a hex string", 1 },
+            "Forground colour specified as a hex string", 10 },
         { "font", 't', "FONT", 0,
             "Font specified as a core X11 font name"
-            " (xlsfonts can help find valid names)", 1 },
+            " (xlsfonts can help find valid names)", 15 },
+        { "anchor-v", 'v', "TOP|CENTER|BOTTOM", 0,
+            "Anchor overlay window vertically (CENTER by default)", 17 },
+        { "anchor-h", 'h', "LEFT|CENTER|RIGHT", 0,
+            "Anchor overlay window horizontally (CENTER by default)", 17 },
+        { "size", 's', "[WIDTH[%]]x[HEIGHT[%]]", 0,
+            "Set width and height of the overlay window in pixels, unless %"
+            " is given, indicating the value is to be taken as a percentage"
+            " of the target window's size", 16 },
+        { "position", 'p', "[X[%]]x[Y[%]]", 0,
+            "Offset position of overlay window by X pixels"
+            " horizontally and Y pixels vertically, unless %"
+            " is given, indicating the value is to be taken as a percentage"
+            " of the target window's size", 16 },
         { 0 }
     };
 
@@ -858,6 +1063,17 @@ an unexpected error occurs.",
         .bg_colour = BG_COLOUR,
         .fg_colour = FG_COLOUR,
         .font_name = OVERLAY_FONT_NAME,
+        .geometry_rules = {
+            .x = 0,
+            .y = 0,
+            .w = 100,
+            .h = 100,
+            .x_perc = false,
+            .y_perc = false,
+            .w_perc = true,
+            .h_perc = true,
+            .anchor = CENTER
+        }
     };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
@@ -1059,16 +1275,53 @@ window_setup_t initialise_window_setup (xcw_state_t* state, xcb_window_t window,
         xcw_die("get_geometry\n");
     }
 
-    xcb_rectangle_t rect = { 0, 0, ggr->width, ggr->height };
+    xcb_rectangle_t rect = { ggr->x, ggr->y, ggr->width, ggr->height };
+
+    if (state->input->geometry_rules.x_perc)
+        rect.x += (state->input->geometry_rules.x * ggr->width)/100;
+    else
+        rect.x += state->input->geometry_rules.x;
+
+    if (state->input->geometry_rules.y_perc)
+        rect.y += (state->input->geometry_rules.y * ggr->height)/100;
+    else
+        rect.y += state->input->geometry_rules.y;
+
+    if (state->input->geometry_rules.w_perc)
+        rect.width = (state->input->geometry_rules.w * ggr->width)/100;
+    else
+        rect.width = state->input->geometry_rules.w;
+
+    if (state->input->geometry_rules.h_perc)
+        rect.height = (state->input->geometry_rules.h * ggr->height)/100;
+    else
+        rect.height = state->input->geometry_rules.h;
+
+    if (state->input->geometry_rules.anchor & CENTER &&
+       (state->input->geometry_rules.anchor & (LEFT|RIGHT)) == 0)
+        rect.x += (ggr->width - (rect.width))/2;
+    else if (state->input->geometry_rules.anchor & RIGHT)
+        rect.x += ggr->width - rect.width;
+
+    if (state->input->geometry_rules.anchor & CENTER &&
+       (state->input->geometry_rules.anchor & (TOP|BOTTOM)) == 0)
+        rect.y += (ggr->height - (rect.height))/2;
+    else if (state->input->geometry_rules.anchor & BOTTOM)
+        rect.y += ggr->height - rect.height;
+
     xcb_rectangle_t* rectp = malloc(sizeof(xcb_rectangle_t));
     *rectp = rect;
     // guaranteed that ksl_size <= windows_size
     xcb_window_t* overlay_window = overlay_create(
-        state, ggr->border_width + ggr->x, ggr->border_width + ggr->y,
+        state, ggr->border_width + rect.x, ggr->border_width + rect.y,
         rect.width, rect.height);
     xcb_window_t* window_p = malloc(sizeof(xcb_window_t));
     *window_p = window;
 
+    // XXX it's unclear to me why these need to be 0 but erasing text doesn't
+    // work right otherwise
+    rectp->x = 0;
+    rectp->y = 0;
     window_setup_t wsetup = {
         overlay_window, NULL, NULL, rectp, window_p, character, NULL, 0
     };
