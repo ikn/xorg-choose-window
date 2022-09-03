@@ -147,6 +147,7 @@ typedef struct xcw_input_t {
 typedef struct xcw_state_t {
     xcb_connection_t* xcon;
     xcb_window_t xroot;
+    xcb_screen_t* xscreen;
     xcb_ewmh_connection_t ewmh;
     xcb_key_symbols_t* ksymbols;
     xcb_font_t overlay_font;
@@ -410,6 +411,31 @@ int xorg_window_has_property (xcb_connection_t* xcon,
 
 
 /**
+ * Get visualid for given bitdepth on given screen
+ *
+ * Adapted from i3
+ * https://github.com/i3/i3/blob/9db03797da3cea5dc6898adc79a68ba4523a409c/src/xcb.c#L212
+ */
+xcb_visualid_t get_visualid_by_depth(xcb_screen_t* screen, int depth) {
+    xcb_depth_iterator_t depth_iter;
+
+    depth_iter = xcb_screen_allowed_depths_iterator(screen);
+    for (; depth_iter.rem; xcb_depth_next(&depth_iter)) {
+        if (depth_iter.data->depth != depth)
+            continue;
+
+        xcb_visualtype_iterator_t visual_iter;
+
+        visual_iter = xcb_depth_visuals_iterator(depth_iter.data);
+        if (!visual_iter.rem)
+            continue;
+        return visual_iter.data->visual_id;
+    }
+    return 0;
+}
+
+
+/**
  * Construct a 2-byte character string from a 1-byte character string.
  */
 xcb_char2b_t* xorg_str_to_2b (char* text, int text_size) {
@@ -628,6 +654,7 @@ void initialise_xorg (xcw_state_t* state) {
     xorg_check_request(xcon, ofc, "open_font");
 
     state->xcon = xcon;
+    state->xscreen = screen;
     state->xroot = xroot;
     state->ewmh = ewmh;
     state->ksymbols = ksymbols;
@@ -1132,14 +1159,39 @@ void initialise_input (xcw_state_t* state) {
 xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     xcb_window_t* win = malloc(sizeof(xcb_window_t));
     *win = xcb_generate_id(state->xcon);
-    uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
-                     XCB_CW_SAVE_UNDER | XCB_CW_EVENT_MASK);
+
+    // we don't draw borders but set a border color because of
+    // https://stackoverflow.com/a/3646456/2730823
+    uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL
+            | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_SAVE_UNDER
+            | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP);
+
+    // for alpha channel we need to create a window with depth 32, which
+    // requires supplying a non-default colormap
+    int depth = 32;
+    xcb_colormap_t win_colormap;
+    win_colormap = xcb_generate_id(state->xcon);
+    xcb_visualid_t visualid;
+    visualid = get_visualid_by_depth(state->xscreen, depth);
+    if (visualid != 0) {
+        xcb_create_colormap(state->xcon, XCB_COLORMAP_ALLOC_NONE, win_colormap,
+            state->xroot, visualid);
+    }
+    // if no visualid found for depth 32, fall back to default
+    else {
+        depth = XCB_COPY_FROM_PARENT;
+        visualid = XCB_COPY_FROM_PARENT;
+        win_colormap = state->xscreen->default_colormap;
+        mask ^= XCB_CW_COLORMAP;
+    }
     uint32_t values[] = {
-        state->input->bg_colour, 1, 1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS
+        state->input->bg_colour, state->xscreen->black_pixel, 1,
+        1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS, win_colormap
     };
+
     xcb_void_cookie_t cwc = xcb_create_window_checked(
-        state->xcon, XCB_COPY_FROM_PARENT, *win, state->xroot, 0, 0, 1, 1, 0,
-        XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, mask, values);
+        state->xcon, depth, *win, state->xroot, 0, 0, 1, 1, 0,
+        XCB_WINDOW_CLASS_INPUT_OUTPUT, visualid, mask, values);
     xorg_check_request(state->xcon, cwc, "create_window");
 
     xcb_icccm_set_wm_class(
