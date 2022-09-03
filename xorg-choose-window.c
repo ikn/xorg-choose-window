@@ -140,7 +140,7 @@ int BG_COLOUR = 0xff333333;
 /**
  * Window class set on overlay windows.
  */
-char* OVERLAY_WINDOW_CLASS = "overlay\0xorg-choose-window";
+#define OVERLAY_WINDOW_CLASS "overlay\0xorg-choose-window"
 /**
  * Number of windows requested from _NET_CLIENT_LIST.
  */
