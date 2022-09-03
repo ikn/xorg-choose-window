@@ -228,13 +228,25 @@ int max (int a, int b) {
  * code: exit code
  * fmt, ...: arguments as taken by `*printf`
  */
-void xcw_fail (int code, char *fmt, ...) {
-    va_list args;
+void xcw_vfail (int code, char *fmt, va_list args) {
     fprintf(stderr, "error: ");
-    va_start(args, fmt);
     vfprintf(stderr, fmt, args);
     va_end(args);
     exit(code);
+}
+
+
+/**
+ * Print an error message to stderr and exit the process with the given status.
+ *
+ * code: exit code
+ * fmt, ...: arguments as taken by `*printf`
+ */
+void xcw_fail (int code, char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    xcw_vfail(code, fmt, args);
+    /* xcw_vfail will call va_end and exit */
 }
 
 
@@ -246,8 +258,8 @@ void xcw_fail (int code, char *fmt, ...) {
 void xcw_die (char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    xcw_fail(EX_SOFTWARE, fmt, args);
-    va_end(args);
+    xcw_vfail(EX_SOFTWARE, fmt, args);
+    /* xcw_vfail will call va_end and exit */
 }
 
 
