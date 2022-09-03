@@ -1169,11 +1169,10 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     // for alpha channel we need to create a window with depth 32, which
     // requires supplying a non-default colormap
     int depth = 32;
+    xcb_visualid_t visualid;
     xcb_colormap_t win_colormap;
     win_colormap = xcb_generate_id(state->xcon);
-    xcb_visualid_t visualid;
-    visualid = get_visualid_by_depth(state->xscreen, depth);
-    if (visualid != 0) {
+    if ((visualid = get_visualid_by_depth(state->xscreen, depth))) {
         xcb_create_colormap(state->xcon, XCB_COLORMAP_ALLOC_NONE, win_colormap,
             state->xroot, visualid);
     }
@@ -1181,8 +1180,7 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     else {
         depth = XCB_COPY_FROM_PARENT;
         visualid = XCB_COPY_FROM_PARENT;
-        win_colormap = state->xscreen->default_colormap;
-        mask ^= XCB_CW_COLORMAP;
+        win_colormap = XCB_COPY_FROM_PARENT;
     }
     uint32_t values[] = {
         state->input->bg_colour, state->xscreen->black_pixel, 1,
