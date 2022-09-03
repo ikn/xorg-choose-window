@@ -38,7 +38,6 @@ specific language governing permissions and limitations under the License.
 
 // TODO (improvements)
 // larger default font
-// configurable font/text size/colours
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
