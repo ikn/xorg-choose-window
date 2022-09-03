@@ -102,6 +102,7 @@ typedef struct xcw_input_t {
     // appearance options
     unsigned int bg_colour;
     unsigned int fg_colour;
+    char* font_name;
 } xcw_input_t;
 
 
@@ -135,7 +136,7 @@ typedef struct xcw_state_t {
  */
 int FG_COLOUR = 0xffffffff;
 /**
- * Name of the font used to render text on overlay windows.
+ * Default name of the font used to render text on overlay windows.
  */
 char* OVERLAY_FONT_NAME = "fixed";
 /**
@@ -551,10 +552,10 @@ int xorg_contains_window (xcb_window_t* windows, int windows_size,
 /**
  * Initialise the connection to the X server.
  *
- * state (output): pointer to program state; `input` and `wsetups` are not
- *     initialised
+ * state (output): pointer to program state;
+ *    xcon xroot emwh ksymbols and overlay_font are initialised
  */
-void initialise_xorg (xcw_state_t** state) {
+void initialise_xorg (xcw_state_t* state) {
     int default_screen; // unused
     xcb_screen_t *screen;
     xcb_connection_t* xcon = xcb_connect(NULL, &default_screen);
@@ -575,15 +576,16 @@ void initialise_xorg (xcw_state_t** state) {
     if (ksymbols == NULL) xcw_die("key_symbols_alloc\n");
 
     xcb_font_t overlay_font = xcb_generate_id(xcon);
-    xcb_void_cookie_t ofc = xcb_open_font_checked(
-        xcon, overlay_font, strlen(OVERLAY_FONT_NAME), OVERLAY_FONT_NAME);
+    xcb_void_cookie_t ofc = xcb_open_font_checked(xcon, overlay_font,
+            strlen(state->input->font_name),
+            state->input->font_name);
     xorg_check_request(xcon, ofc, "open_font");
 
-    *state = malloc(sizeof(xcw_state_t));
-    xcw_state_t local_state = {
-        xcon, xroot, ewmh, ksymbols, overlay_font, NULL, NULL, 0
-    };
-    **state = local_state;
+    state->xcon = xcon;
+    state->xroot = xroot;
+    state->ewmh = ewmh;
+    state->ksymbols = ksymbols;
+    state->overlay_font = overlay_font;
 }
 
 
@@ -747,6 +749,22 @@ void parse_arg_fg_colour (char* format, struct argp_state* state,
 
 
 /**
+ * Parse the `--font` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_font (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    if (strlen(format) == 0) {
+        argp_error(state, "invalid value for font: %s", format);
+        return;
+    }
+    input->font_name = format;
+}
+
+
+/**
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
@@ -771,6 +789,9 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
         return 0;
     } else if (key == 2) {
         parse_arg_fg_colour(value, state, input);
+        return 0;
+    } else if (key == 't') {
+        parse_arg_font(value, state, input);
         return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
@@ -803,6 +824,9 @@ xcw_input_t* parse_args (int argc, char** argv) {
             "Background colour specified as a hex string", 1 },
         { "fg-colour", 2, "COLOUR", 0,
             "Forground colour specified as a hex string", 1 },
+        { "font", 't', "FONT", 0,
+            "Font specified as a core X11 font name"
+            " (xlsfonts can help find valid names)", 1 },
         { 0 }
     };
 
@@ -833,6 +857,7 @@ an unexpected error occurs.",
         .format = FORMAT_DEC,
         .bg_colour = BG_COLOUR,
         .fg_colour = FG_COLOUR,
+        .font_name = OVERLAY_FONT_NAME,
     };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
@@ -1314,8 +1339,9 @@ void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
 int main (int argc, char** argv) {
     xcw_input_t* input = parse_args(argc, argv);
     xcw_state_t* state;
-    initialise_xorg(&state);
+    state = malloc(sizeof(xcw_state_t));
     state->input = input;
+    initialise_xorg(state);
     initialise_input(state);
 
     xcb_window_t* windows;
