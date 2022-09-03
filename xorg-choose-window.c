@@ -785,13 +785,43 @@ void parse_arg_format (char* format, struct argp_state* state,
  * format: value passed to the option
  */
 int parse_arg_colour (char* format, struct argp_state* state) {
-    int status;
-    int colour;
-    status = sscanf(format, "%x", &colour);
-    if (status == EOF || status < 1) {
-        argp_error(state, "invalid value for colour: %s", format);
-        return -1;
+    int colour = 0;
+    uint8_t rgba[] = {0, 0, 0, 0};
+    char errmsg[] = "invalid value for colour: '%s'; valid formats are"
+                    " RRGGBB or RRGGBBAA";
+
+    if (*format == '#')
+        format++;
+
+    int len=strlen(format);
+    if (len != 6 && len != 8) {
+        argp_error(state, errmsg, format); return 0;
     }
+    for (uint8_t* c=rgba;c<rgba+(len/2);c++) {
+        char* endptr = NULL;
+        char ch2[3];
+        ch2[0] = format[0];
+        ch2[1] = format[1];
+        ch2[2] = '\0';
+        format+=2;
+        *c = strtol(ch2, &endptr, 16);
+        if (endptr == ch2) {
+            argp_error(state, errmsg, format); return 0;
+        }
+    }
+    if (len == 6)
+        rgba[3] = 0xff;
+
+    // premultiply alpha
+    for (uint8_t* c=rgba;c<rgba+3;c++) {
+        *c = (*c * rgba[3])/0xff;
+    }
+
+    colour |= rgba[3]<<0x18;
+    colour |= rgba[0]<<0x10;
+    colour |= rgba[1]<<0x8;
+    colour |= rgba[2];
+
     return colour;
 }
 
@@ -1039,9 +1069,11 @@ xcw_input_t* parse_args (int argc, char** argv) {
         { "format", 'f', "FORMAT", 0,
             "Output format: 'decimal' or 'hexadecimal'" },
         { "bg-colour", 1, "COLOUR", 0,
-            "Background colour specified as a hex string", 10 },
+            "Background colour. Colours are given in hexadecimal in the form"
+                " [#]RRGGBB[AA]", 10 },
         { "fg-colour", 2, "COLOUR", 0,
-            "Forground colour specified as a hex string", 10 },
+            "Foreground colour. Colours are given in hexadecimal in the form"
+                " [#]RRGGBB[AA]", 10 },
         { "font", 't', "FONT", 0,
             "Font specified as a core X11 font name"
             " (xlsfonts can help find valid names)", 15 },
