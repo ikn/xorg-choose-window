@@ -159,6 +159,10 @@ typedef struct xcw_state_t {
 // -- constants
 
 /**
+ * Default character pool for easy motion
+ */
+char* CHARACTERS = "sdfjkl";
+/**
  * Default text colour for overlay windows.
  */
 int FG_COLOUR = 0xffffffff;
@@ -1041,6 +1045,9 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
     } else if (key == 'v') {
         parse_arg_anchor_v(value, state, input);
         return 0;
+    } else if (key == 'c') {
+            parse_arg_characters(value, state, input);
+            return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
             parse_arg_characters(value, state, input);
@@ -1090,11 +1097,13 @@ xcw_input_t* parse_args (int argc, char** argv) {
             " horizontally and Y pixels vertically, unless %"
             " is given, indicating the value is to be taken as a percentage"
             " of the target window's size", 16 },
+        { "characters", 'c', "CHARACTERS", 0,
+            "Characters to use for easy motion; defaults to 'sdfjkl'", 0 },
         { 0 }
     };
 
     struct argp parser = {
-        options, parse_arg, "CHARACTERS",
+        options, parse_arg, NULL,
         "\n\
 Running the program draws a string of characters over each visible window.  \
 Typing one of those strings causes the program to print the corresponding \
@@ -1135,10 +1144,8 @@ an unexpected error occurs.",
     };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
+    parse_arg_characters(CHARACTERS, NULL, inputp);
     argp_parse(&parser, argc, argv, 0, NULL, inputp);
-    if (inputp->ksl == NULL) {
-        xcw_fail(EX_USAGE, "missing CHARACTERS argument\n");
-    }
     return inputp;
 }
 
