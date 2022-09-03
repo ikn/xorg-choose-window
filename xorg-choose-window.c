@@ -226,7 +226,7 @@ int max (int a, int b) {
  * Print an error message to stderr and exit the process with the given status.
  *
  * code: exit code
- * fmt, ...: arguments as taken by `*printf`
+ * fmt, va_list: arguments as taken by `vprintf`
  */
 void xcw_vfail (int code, char *fmt, va_list args) {
     fprintf(stderr, "error: ");
