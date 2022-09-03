@@ -99,6 +99,9 @@ typedef struct xcw_input_t {
     xcb_window_t* whitelist;
     int whitelist_size;
     short format;
+    // appearance options
+    unsigned int bg_colour;
+    unsigned int fg_colour;
 } xcw_input_t;
 
 
@@ -128,7 +131,7 @@ typedef struct xcw_state_t {
 // -- constants
 
 /**
- * Text colour for overlay windows.
+ * Default text colour for overlay windows.
  */
 int FG_COLOUR = 0xffffffff;
 /**
@@ -136,7 +139,7 @@ int FG_COLOUR = 0xffffffff;
  */
 char* OVERLAY_FONT_NAME = "fixed";
 /**
- * Background colour for overlay windows.
+ * Default background colour for overlay windows.
  */
 int BG_COLOUR = 0xff333333;
 /**
@@ -703,6 +706,47 @@ void parse_arg_format (char* format, struct argp_state* state,
 
 
 /**
+ * Parse a colour option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ */
+int parse_arg_colour (char* format, struct argp_state* state) {
+    int status;
+    int colour;
+    status = sscanf(format, "%x", &colour);
+    if (status == EOF || status < 1) {
+        argp_error(state, "invalid value for colour: %s", format);
+        return -1;
+    }
+    return colour;
+}
+
+
+/**
+ * Parse the `--bg-colour` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_bg_colour (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    input->bg_colour = parse_arg_colour(format, state);
+}
+
+
+/**
+ * Parse the `--fg-colour` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_fg_colour (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    input->fg_colour = parse_arg_colour(format, state);
+}
+
+
+/**
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
@@ -721,6 +765,12 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
         return 0;
     } else if (key == 'f') {
         parse_arg_format(value, state, input);
+        return 0;
+    } else if (key == 1) {
+        parse_arg_bg_colour(value, state, input);
+        return 0;
+    } else if (key == 2) {
+        parse_arg_fg_colour(value, state, input);
         return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
@@ -749,6 +799,10 @@ xcw_input_t* parse_args (int argc, char** argv) {
 (specify this option multiple times)" },
         { "format", 'f', "FORMAT", 0,
             "Output format: 'decimal' or 'hexadecimal'" },
+        { "bg-colour", 1, "COLOUR", 0,
+            "Background colour specified as a hex string", 1 },
+        { "fg-colour", 2, "COLOUR", 0,
+            "Forground colour specified as a hex string", 1 },
         { 0 }
     };
 
@@ -769,7 +823,17 @@ an unexpected error occurs.",
         NULL, NULL, NULL
     };
 
-    xcw_input_t input = { NULL, 0, NULL, 0 };
+    xcw_input_t input = {
+        .ksl = NULL,
+        .ksl_size = 0,
+        .blacklist = NULL,
+        .blacklist_size = 0,
+        .whitelist = NULL,
+        .whitelist_size = 0,
+        .format = FORMAT_DEC,
+        .bg_colour = BG_COLOUR,
+        .fg_colour = FG_COLOUR,
+    };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
     argp_parse(&parser, argc, argv, 0, NULL, inputp);
@@ -830,7 +894,7 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
                      XCB_CW_SAVE_UNDER | XCB_CW_EVENT_MASK);
     uint32_t values[] = {
-        BG_COLOUR, 1, 1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS
+        state->input->bg_colour, 1, 1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS
     };
     xcb_void_cookie_t cwc = xcb_create_window_checked(
         state->xcon, XCB_COPY_FROM_PARENT, *win, state->xroot, 0, 0, 1, 1, 0,
@@ -851,14 +915,14 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
  *
  * win: the overlay window
  */
-xcb_gcontext_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
+xcb_gcontext_t* overlay_get_bg_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
-    *gc = xcb_generate_id(xcon);
+    *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND;
-    uint32_t value_list[] = { BG_COLOUR };
+    uint32_t value_list[] = { state->input->bg_colour };
     xcb_void_cookie_t cgc = (
-        xcb_create_gc_checked(xcon, *gc, win, mask, value_list));
-    xorg_check_request(xcon, cgc, "create_gc");
+        xcb_create_gc_checked(state->xcon, *gc, win, mask, value_list));
+    xorg_check_request(state->xcon, cgc, "create_gc");
     return gc;
 }
 
@@ -872,7 +936,7 @@ xcb_gcontext_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND | XCB_GC_FONT;
-    uint32_t value_list[] = { FG_COLOUR, BG_COLOUR, state->overlay_font };
+    uint32_t value_list[] = { state->input->fg_colour, state->input->bg_colour, state->overlay_font };
     xcb_void_cookie_t cgc = (
         xcb_create_gc_checked(state->xcon, *gc, win, mask, value_list));
     xorg_check_request(state->xcon, cgc, "create_gc");
@@ -894,7 +958,7 @@ void overlay_set_text (xcw_state_t* state,
     xcb_window_t win = *(wsetup->overlay_window);
 
     if (wsetup->overlay_bg_gc == NULL) {
-        wsetup->overlay_bg_gc = overlay_get_bg_gc(state->xcon, win);
+        wsetup->overlay_bg_gc = overlay_get_bg_gc(state, win);
     }
     if (wsetup->overlay_font_gc == NULL) {
         wsetup->overlay_font_gc = overlay_get_font_gc(state, win);
