@@ -173,7 +173,7 @@ char* OVERLAY_FONT_NAME = "fixed";
 /**
  * Default background colour for overlay windows.
  */
-int BG_COLOUR = 0xff333333;
+int BG_COLOUR = 0xbb080808;
 /**
  * Possible values for anchor
  */
@@ -1134,12 +1134,12 @@ an unexpected error occurs.",
             .x = 0,
             .y = 0,
             .w = 100,
-            .h = 100,
+            .h = 65,
             .x_perc = false,
             .y_perc = false,
-            .w_perc = true,
-            .h_perc = true,
-            .anchor = CENTER
+            .w_perc = false,
+            .h_perc = false,
+            .anchor = TOP | LEFT
         }
     };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
