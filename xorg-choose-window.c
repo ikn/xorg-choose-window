@@ -31,6 +31,7 @@ specific language governing permissions and limitations under the License.
 
 
 // TODO (fixes)
+// using sysexits.h which is glibc-specific?  any others?
 // mask usages (x3): what should the order be?  doc says just pass in one
 // structure for wsetup.overlay_*, wsetup.window
 
@@ -40,6 +41,7 @@ specific language governing permissions and limitations under the License.
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
+// option to only partially cover the window
 
 
 // -- types
@@ -759,7 +761,7 @@ window ID to standard output and exit.  If any non-matching keys are pressed, \
 the program exits without printing anything.\n\
 \n\
 CHARACTERS defines the characters available for use in the displayed strings; \
-eg. 'asdfjkl' is a good choice for a QWERTY keyboard layout.  Allowed \
+e.g. 'asdfjkl' is a good choice for a QWERTY keyboard layout.  Allowed \
 characters are the numbers 0-9 and the letters a-z.\n\
 \n\
 The program exits with status 0 on success, 64 on invalid arguments, and 70 if \
