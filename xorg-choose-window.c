@@ -19,6 +19,7 @@ specific language governing permissions and limitations under the License.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <math.h>
 #include <errno.h>
@@ -37,7 +38,6 @@ specific language governing permissions and limitations under the License.
 
 // TODO (improvements)
 // larger default font
-// configurable font/text size/colours
 // manpage
 //  - mention in readme
 //  - move exit status info from --help
@@ -83,6 +83,31 @@ typedef struct window_setup_t {
     int children_size;
 } window_setup_t;
 
+
+/**
+ * Overlay positioning rules
+ *
+ * x: horizontal offset
+ * y: vertical offset
+ * w: horizontal size
+ * h: vertical size
+ * *perc: true if the corresponding value should be considered as a
+ *     percentage of the tracked window
+ * anchor: where to base offset. Mask of LEFT RIGHT TOP BOTTOM CENTER
+ */
+typedef struct overlay_geometry_t {
+    int x;
+    int y;
+    int w;
+    int h;
+    bool x_perc;
+    bool y_perc;
+    bool w_perc;
+    bool h_perc;
+    int anchor;
+} overlay_geometry_t;
+
+
 /**
  * Data generated from initial user input to the program.
  *
@@ -99,6 +124,11 @@ typedef struct xcw_input_t {
     xcb_window_t* whitelist;
     int whitelist_size;
     short format;
+    // appearance options
+    unsigned int bg_colour;
+    unsigned int fg_colour;
+    char* font_name;
+    overlay_geometry_t geometry_rules;
 } xcw_input_t;
 
 
@@ -116,6 +146,7 @@ typedef struct xcw_input_t {
 typedef struct xcw_state_t {
     xcb_connection_t* xcon;
     xcb_window_t xroot;
+    xcb_screen_t* xscreen;
     xcb_ewmh_connection_t ewmh;
     xcb_key_symbols_t* ksymbols;
     xcb_font_t overlay_font;
@@ -128,17 +159,29 @@ typedef struct xcw_state_t {
 // -- constants
 
 /**
- * Text colour for overlay windows.
+ * Default character pool for easy motion
+ */
+char* CHARACTERS = "sdfjkl";
+/**
+ * Default text colour for overlay windows.
  */
 int FG_COLOUR = 0xffffffff;
 /**
- * Name of the font used to render text on overlay windows.
+ * Default name of the font used to render text on overlay windows.
  */
 char* OVERLAY_FONT_NAME = "fixed";
 /**
- * Background colour for overlay windows.
+ * Default background colour for overlay windows.
  */
-int BG_COLOUR = 0xff333333;
+int BG_COLOUR = 0xbb080808;
+/**
+ * Possible values for anchor
+ */
+#define LEFT   1
+#define RIGHT  2
+#define TOP    4
+#define BOTTOM 8
+#define CENTER 16
 /**
  * Window class set on overlay windows.
  */
@@ -207,6 +250,17 @@ int ALL_KEYSYMS_LOOKUP_SIZE = (
 
 
 // -- utilities
+
+/**
+ * Convert string to uppercase in-place
+ */
+void upper (char* str) {
+    for (char* ch=str;*ch!='\0';ch++) {
+        if (*ch >= 'a' && *ch <= 'z')
+            *ch -= 32;
+    }
+}
+
 
 /**
  * Compute the smaller of two numbers.
@@ -356,6 +410,31 @@ int xorg_window_has_property (xcb_connection_t* xcon,
 
     free(lpr);
     return result;
+}
+
+
+/**
+ * Get visualid for given bitdepth on given screen
+ *
+ * Adapted from i3
+ * https://github.com/i3/i3/blob/9db03797da3cea5dc6898adc79a68ba4523a409c/src/xcb.c#L212
+ */
+xcb_visualid_t get_visualid_by_depth(xcb_screen_t* screen, int depth) {
+    xcb_depth_iterator_t depth_iter;
+
+    depth_iter = xcb_screen_allowed_depths_iterator(screen);
+    for (; depth_iter.rem; xcb_depth_next(&depth_iter)) {
+        if (depth_iter.data->depth != depth)
+            continue;
+
+        xcb_visualtype_iterator_t visual_iter;
+
+        visual_iter = xcb_depth_visuals_iterator(depth_iter.data);
+        if (!visual_iter.rem)
+            continue;
+        return visual_iter.data->visual_id;
+    }
+    return 0;
 }
 
 
@@ -548,10 +627,10 @@ int xorg_contains_window (xcb_window_t* windows, int windows_size,
 /**
  * Initialise the connection to the X server.
  *
- * state (output): pointer to program state; `input` and `wsetups` are not
- *     initialised
+ * state (output): pointer to program state;
+ *    xcon xroot emwh ksymbols and overlay_font are initialised
  */
-void initialise_xorg (xcw_state_t** state) {
+void initialise_xorg (xcw_state_t* state) {
     int default_screen; // unused
     xcb_screen_t *screen;
     xcb_connection_t* xcon = xcb_connect(NULL, &default_screen);
@@ -572,15 +651,17 @@ void initialise_xorg (xcw_state_t** state) {
     if (ksymbols == NULL) xcw_die("key_symbols_alloc\n");
 
     xcb_font_t overlay_font = xcb_generate_id(xcon);
-    xcb_void_cookie_t ofc = xcb_open_font_checked(
-        xcon, overlay_font, strlen(OVERLAY_FONT_NAME), OVERLAY_FONT_NAME);
+    xcb_void_cookie_t ofc = xcb_open_font_checked(xcon, overlay_font,
+            strlen(state->input->font_name),
+            state->input->font_name);
     xorg_check_request(xcon, ofc, "open_font");
 
-    *state = malloc(sizeof(xcw_state_t));
-    xcw_state_t local_state = {
-        xcon, xroot, ewmh, ksymbols, overlay_font, NULL, NULL, 0
-    };
-    **state = local_state;
+    state->xcon = xcon;
+    state->xscreen = screen;
+    state->xroot = xroot;
+    state->ewmh = ewmh;
+    state->ksymbols = ksymbols;
+    state->overlay_font = overlay_font;
 }
 
 
@@ -703,6 +784,227 @@ void parse_arg_format (char* format, struct argp_state* state,
 
 
 /**
+ * Parse a colour option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ */
+int parse_arg_colour (char* format, struct argp_state* state) {
+    int colour = 0;
+    uint8_t rgba[] = {0, 0, 0, 0};
+    char errmsg[] = "invalid value for colour: '%s'; valid formats are"
+                    " RRGGBB or RRGGBBAA";
+
+    if (*format == '#')
+        format++;
+
+    int len=strlen(format);
+    if (len != 6 && len != 8) {
+        argp_error(state, errmsg, format); return 0;
+    }
+    for (uint8_t* c=rgba;c<rgba+(len/2);c++) {
+        char* endptr = NULL;
+        char ch2[3];
+        ch2[0] = format[0];
+        ch2[1] = format[1];
+        ch2[2] = '\0';
+        format+=2;
+        *c = strtol(ch2, &endptr, 16);
+        if (endptr == ch2) {
+            argp_error(state, errmsg, format); return 0;
+        }
+    }
+    if (len == 6)
+        rgba[3] = 0xff;
+
+    // premultiply alpha
+    for (uint8_t* c=rgba;c<rgba+3;c++) {
+        *c = (*c * rgba[3])/0xff;
+    }
+
+    colour |= rgba[3]<<0x18;
+    colour |= rgba[0]<<0x10;
+    colour |= rgba[1]<<0x8;
+    colour |= rgba[2];
+
+    return colour;
+}
+
+
+/**
+ * Parse the `--bg-colour` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_bg_colour (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    input->bg_colour = parse_arg_colour(format, state);
+}
+
+
+/**
+ * Parse the `--fg-colour` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_fg_colour (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    input->fg_colour = parse_arg_colour(format, state);
+}
+
+
+/**
+ * Parse the `--font` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_font (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    if (strlen(format) == 0) {
+        argp_error(state, "invalid value for font: %s", format);
+        return;
+    }
+    input->font_name = format;
+}
+
+
+/**
+ * Parse the `--position` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_position (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    int x, y;
+    bool x_perc = false;
+    bool y_perc = false;
+    char* remainder = NULL;
+
+    x = strtol(format, &remainder, 10);
+    if (format == remainder) {
+        argp_error(state, "invalid value for x offset: %s", format);
+        return;
+    }
+    if (*remainder == '%')
+    { x_perc = true; remainder++; }
+
+    if (*remainder != 'x' && *remainder != 'X') {
+        argp_error(state, "invalid value for position: %s", format);
+        return;
+    }
+    else { remainder++; }
+
+    format = remainder;
+    y = strtol(format, &remainder, 10);
+    if (format == remainder) {
+        argp_error(state, "invalid value for y offset: %s", remainder);
+        return;
+    }
+    if (*remainder == '%')
+    { y_perc = true; remainder++; }
+
+    input->geometry_rules.x = x;
+    input->geometry_rules.y = y;
+    input->geometry_rules.x_perc = x_perc;
+    input->geometry_rules.y_perc = y_perc;
+}
+
+
+/**
+ * Parse the `--size` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_size (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    int w, h;
+    bool w_perc = false;
+    bool h_perc = false;
+    char* remainder = NULL;
+
+    w = strtol(format, &remainder, 10);
+    if (format == remainder || w <= 0) {
+        argp_error(state, "invalid value for width: %s", format);
+        return;
+    }
+    if (*remainder == '%')
+    { w_perc = true; remainder++; }
+
+    if (*remainder != 'x' && *remainder != 'X') {
+        argp_error(state, "invalid value for size: %s", format);
+        return;
+    }
+    else { remainder++; }
+
+    format = remainder;
+    h = strtol(format, &remainder, 10);
+    if (format == remainder || h <= 0) {
+        argp_error(state, "invalid value for height: %s", remainder);
+        return;
+    }
+    if (*remainder == '%')
+    { h_perc = true; remainder++; }
+
+    input->geometry_rules.w = w;
+    input->geometry_rules.h = h;
+    input->geometry_rules.w_perc = w_perc;
+    input->geometry_rules.h_perc = h_perc;
+}
+
+
+/**
+ * Parse the `--anchor-h` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_anchor_h (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    upper(format);
+    if (strcmp(format, "LEFT") == 0) {
+        input->geometry_rules.anchor |= LEFT;
+    }
+    else if (strcmp(format, "RIGHT") == 0) {
+        input->geometry_rules.anchor |= RIGHT;
+    }
+    else if (strcmp(format, "CENTER") == 0) {
+        input->geometry_rules.anchor |= CENTER;
+    }
+    else{
+        argp_error(state, "invalid value for anchor-h: %s", format);
+    }
+}
+
+
+/**
+ * Parse the `--anchor-v` option.  May call `argp_error`.
+ *
+ * format: value passed to the option
+ * input: result is placed in here
+ */
+void parse_arg_anchor_v (char* format, struct argp_state* state,
+                       xcw_input_t* input) {
+    upper(format);
+    if (strcmp(format, "TOP") == 0) {
+        input->geometry_rules.anchor |= TOP;
+    }
+    else if (strcmp(format, "BOTTOM") == 0) {
+        input->geometry_rules.anchor |= BOTTOM;
+    }
+    else if (strcmp(format, "CENTER") == 0) {
+        input->geometry_rules.anchor |= CENTER;
+    }
+    else{
+        argp_error(state, "invalid value for anchor-v: %s", format);
+    }
+}
+
+
+/**
  * Argument parsing function for use with `argp`.
  *
  * state: `input` is `xcw_input_t*`, which points to an allocated instance that
@@ -722,6 +1024,30 @@ error_t parse_arg (int key, char* value, struct argp_state* state) {
     } else if (key == 'f') {
         parse_arg_format(value, state, input);
         return 0;
+    } else if (key == 1) {
+        parse_arg_bg_colour(value, state, input);
+        return 0;
+    } else if (key == 2) {
+        parse_arg_fg_colour(value, state, input);
+        return 0;
+    } else if (key == 't') {
+        parse_arg_font(value, state, input);
+        return 0;
+    } else if (key == 'p') {
+        parse_arg_position(value, state, input);
+        return 0;
+    } else if (key == 's') {
+        parse_arg_size(value, state, input);
+        return 0;
+    } else if (key == 'h') {
+        parse_arg_anchor_h(value, state, input);
+        return 0;
+    } else if (key == 'v') {
+        parse_arg_anchor_v(value, state, input);
+        return 0;
+    } else if (key == 'c') {
+            parse_arg_characters(value, state, input);
+            return 0;
     } else if (key == ARGP_KEY_ARG) {
         if (state->arg_num == 0) {
             parse_arg_characters(value, state, input);
@@ -749,11 +1075,35 @@ xcw_input_t* parse_args (int argc, char** argv) {
 (specify this option multiple times)" },
         { "format", 'f', "FORMAT", 0,
             "Output format: 'decimal' or 'hexadecimal'" },
+        { "bg-colour", 1, "COLOUR", 0,
+            "Background colour. Colours are given in hexadecimal in the form"
+                " [#]RRGGBB[AA]", 10 },
+        { "fg-colour", 2, "COLOUR", 0,
+            "Foreground colour. Colours are given in hexadecimal in the form"
+                " [#]RRGGBB[AA]", 10 },
+        { "font", 't', "FONT", 0,
+            "Font specified as a core X11 font name"
+            " (xlsfonts can help find valid names)", 15 },
+        { "anchor-v", 'v', "TOP|CENTER|BOTTOM", 0,
+            "Anchor overlay window vertically (CENTER by default)", 17 },
+        { "anchor-h", 'h', "LEFT|CENTER|RIGHT", 0,
+            "Anchor overlay window horizontally (CENTER by default)", 17 },
+        { "size", 's', "[WIDTH[%]]x[HEIGHT[%]]", 0,
+            "Set width and height of the overlay window in pixels, unless %"
+            " is given, indicating the value is to be taken as a percentage"
+            " of the target window's size", 16 },
+        { "position", 'p', "[X[%]]x[Y[%]]", 0,
+            "Offset position of overlay window by X pixels"
+            " horizontally and Y pixels vertically, unless %"
+            " is given, indicating the value is to be taken as a percentage"
+            " of the target window's size", 16 },
+        { "characters", 'c', "CHARACTERS", 0,
+            "Characters to use for easy motion; defaults to 'sdfjkl'", 0 },
         { 0 }
     };
 
     struct argp parser = {
-        options, parse_arg, "CHARACTERS",
+        options, parse_arg, NULL,
         "\n\
 Running the program draws a string of characters over each visible window.  \
 Typing one of those strings causes the program to print the corresponding \
@@ -769,13 +1119,33 @@ an unexpected error occurs.",
         NULL, NULL, NULL
     };
 
-    xcw_input_t input = { NULL, 0, NULL, 0 };
+    xcw_input_t input = {
+        .ksl = NULL,
+        .ksl_size = 0,
+        .blacklist = NULL,
+        .blacklist_size = 0,
+        .whitelist = NULL,
+        .whitelist_size = 0,
+        .format = FORMAT_DEC,
+        .bg_colour = BG_COLOUR,
+        .fg_colour = FG_COLOUR,
+        .font_name = OVERLAY_FONT_NAME,
+        .geometry_rules = {
+            .x = 0,
+            .y = 0,
+            .w = 100,
+            .h = 65,
+            .x_perc = false,
+            .y_perc = false,
+            .w_perc = false,
+            .h_perc = false,
+            .anchor = TOP | LEFT
+        }
+    };
     xcw_input_t* inputp = malloc(sizeof(xcw_input_t));
     *inputp = input;
+    parse_arg_characters(CHARACTERS, NULL, inputp);
     argp_parse(&parser, argc, argv, 0, NULL, inputp);
-    if (inputp->ksl == NULL) {
-        xcw_fail(EX_USAGE, "missing CHARACTERS argument\n");
-    }
     return inputp;
 }
 
@@ -827,14 +1197,37 @@ void initialise_input (xcw_state_t* state) {
 xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
     xcb_window_t* win = malloc(sizeof(xcb_window_t));
     *win = xcb_generate_id(state->xcon);
-    uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT |
-                     XCB_CW_SAVE_UNDER | XCB_CW_EVENT_MASK);
+
+    // we don't draw borders but set a border color because of
+    // https://stackoverflow.com/a/3646456/2730823
+    uint32_t mask = (XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL
+            | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_SAVE_UNDER
+            | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP);
+
+    // for alpha channel we need to create a window with depth 32, which
+    // requires supplying a non-default colormap
+    int depth = 32;
+    xcb_visualid_t visualid;
+    xcb_colormap_t win_colormap;
+    win_colormap = xcb_generate_id(state->xcon);
+    if ((visualid = get_visualid_by_depth(state->xscreen, depth))) {
+        xcb_create_colormap(state->xcon, XCB_COLORMAP_ALLOC_NONE, win_colormap,
+            state->xroot, visualid);
+    }
+    // if no visualid found for depth 32, fall back to default
+    else {
+        depth = XCB_COPY_FROM_PARENT;
+        visualid = XCB_COPY_FROM_PARENT;
+        win_colormap = XCB_COPY_FROM_PARENT;
+    }
     uint32_t values[] = {
-        BG_COLOUR, 1, 1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS
+        state->input->bg_colour, state->xscreen->black_pixel, 1,
+        1, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS, win_colormap
     };
+
     xcb_void_cookie_t cwc = xcb_create_window_checked(
-        state->xcon, XCB_COPY_FROM_PARENT, *win, state->xroot, 0, 0, 1, 1, 0,
-        XCB_WINDOW_CLASS_INPUT_OUTPUT, XCB_COPY_FROM_PARENT, mask, values);
+        state->xcon, depth, *win, state->xroot, 0, 0, 1, 1, 0,
+        XCB_WINDOW_CLASS_INPUT_OUTPUT, visualid, mask, values);
     xorg_check_request(state->xcon, cwc, "create_window");
 
     xcb_icccm_set_wm_class(
@@ -851,14 +1244,14 @@ xcb_window_t* overlay_create (xcw_state_t* state, int x, int y, int w, int h) {
  *
  * win: the overlay window
  */
-xcb_gcontext_t* overlay_get_bg_gc (xcb_connection_t* xcon, xcb_window_t win) {
+xcb_gcontext_t* overlay_get_bg_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
-    *gc = xcb_generate_id(xcon);
+    *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND;
-    uint32_t value_list[] = { BG_COLOUR };
+    uint32_t value_list[] = { state->input->bg_colour };
     xcb_void_cookie_t cgc = (
-        xcb_create_gc_checked(xcon, *gc, win, mask, value_list));
-    xorg_check_request(xcon, cgc, "create_gc");
+        xcb_create_gc_checked(state->xcon, *gc, win, mask, value_list));
+    xorg_check_request(state->xcon, cgc, "create_gc");
     return gc;
 }
 
@@ -872,7 +1265,7 @@ xcb_gcontext_t* overlay_get_font_gc (xcw_state_t* state, xcb_window_t win) {
     xcb_gcontext_t* gc = malloc(sizeof(xcb_gcontext_t));
     *gc = xcb_generate_id(state->xcon);
     uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND | XCB_GC_FONT;
-    uint32_t value_list[] = { FG_COLOUR, BG_COLOUR, state->overlay_font };
+    uint32_t value_list[] = { state->input->fg_colour, state->input->bg_colour, state->overlay_font };
     xcb_void_cookie_t cgc = (
         xcb_create_gc_checked(state->xcon, *gc, win, mask, value_list));
     xorg_check_request(state->xcon, cgc, "create_gc");
@@ -894,7 +1287,7 @@ void overlay_set_text (xcw_state_t* state,
     xcb_window_t win = *(wsetup->overlay_window);
 
     if (wsetup->overlay_bg_gc == NULL) {
-        wsetup->overlay_bg_gc = overlay_get_bg_gc(state->xcon, win);
+        wsetup->overlay_bg_gc = overlay_get_bg_gc(state, win);
     }
     if (wsetup->overlay_font_gc == NULL) {
         wsetup->overlay_font_gc = overlay_get_font_gc(state, win);
@@ -970,16 +1363,53 @@ window_setup_t initialise_window_setup (xcw_state_t* state, xcb_window_t window,
         xcw_die("get_geometry\n");
     }
 
-    xcb_rectangle_t rect = { 0, 0, ggr->width, ggr->height };
+    xcb_rectangle_t rect = { ggr->x, ggr->y, ggr->width, ggr->height };
+
+    if (state->input->geometry_rules.x_perc)
+        rect.x += (state->input->geometry_rules.x * ggr->width)/100;
+    else
+        rect.x += state->input->geometry_rules.x;
+
+    if (state->input->geometry_rules.y_perc)
+        rect.y += (state->input->geometry_rules.y * ggr->height)/100;
+    else
+        rect.y += state->input->geometry_rules.y;
+
+    if (state->input->geometry_rules.w_perc)
+        rect.width = (state->input->geometry_rules.w * ggr->width)/100;
+    else
+        rect.width = state->input->geometry_rules.w;
+
+    if (state->input->geometry_rules.h_perc)
+        rect.height = (state->input->geometry_rules.h * ggr->height)/100;
+    else
+        rect.height = state->input->geometry_rules.h;
+
+    if (state->input->geometry_rules.anchor & CENTER &&
+       (state->input->geometry_rules.anchor & (LEFT|RIGHT)) == 0)
+        rect.x += (ggr->width - (rect.width))/2;
+    else if (state->input->geometry_rules.anchor & RIGHT)
+        rect.x += ggr->width - rect.width;
+
+    if (state->input->geometry_rules.anchor & CENTER &&
+       (state->input->geometry_rules.anchor & (TOP|BOTTOM)) == 0)
+        rect.y += (ggr->height - (rect.height))/2;
+    else if (state->input->geometry_rules.anchor & BOTTOM)
+        rect.y += ggr->height - rect.height;
+
     xcb_rectangle_t* rectp = malloc(sizeof(xcb_rectangle_t));
     *rectp = rect;
     // guaranteed that ksl_size <= windows_size
     xcb_window_t* overlay_window = overlay_create(
-        state, ggr->border_width + ggr->x, ggr->border_width + ggr->y,
+        state, ggr->border_width + rect.x, ggr->border_width + rect.y,
         rect.width, rect.height);
     xcb_window_t* window_p = malloc(sizeof(xcb_window_t));
     *window_p = window;
 
+    // XXX it's unclear to me why these need to be 0 but erasing text doesn't
+    // work right otherwise
+    rectp->x = 0;
+    rectp->y = 0;
     window_setup_t wsetup = {
         overlay_window, NULL, NULL, rectp, window_p, character, NULL, 0
     };
@@ -1250,8 +1680,9 @@ void handle_keypress (xcw_state_t* state, xcb_key_press_event_t* kp) {
 int main (int argc, char** argv) {
     xcw_input_t* input = parse_args(argc, argv);
     xcw_state_t* state;
-    initialise_xorg(&state);
+    state = malloc(sizeof(xcw_state_t));
     state->input = input;
+    initialise_xorg(state);
     initialise_input(state);
 
     xcb_window_t* windows;
